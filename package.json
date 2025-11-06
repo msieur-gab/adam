@@ -1,0 +1,19 @@
+{
+  "name": "adam-elderly-companion",
+  "version": "0.1.0",
+  "description": "A local-first AI companion for elderly care with voice interaction",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lit": "^3.1.0",
+    "dexie": "^4.0.1",
+    "@xenova/transformers": "^2.17.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
