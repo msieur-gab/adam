@@ -16,117 +16,163 @@ class VoiceInput extends LitElement {
   static styles = css`
     :host {
       display: block;
+    }
+
+    /* Floating Action Button */
+    .fab {
       position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      background: var(--surface);
-      border-top: 2px solid var(--primary);
-      box-shadow: 0 -4px 6px -1px rgb(0 0 0 / 0.1);
-      z-index: 100;
-    }
-
-    .voice-container {
-      padding: var(--spacing);
-      max-width: 800px;
-      margin: 0 auto;
-    }
-
-    .mic-button {
-      width: 80px;
-      height: 80px;
+      bottom: 24px;
+      right: 24px;
+      width: 64px;
+      height: 64px;
       border-radius: 50%;
       border: none;
       background: var(--primary);
       color: white;
-      font-size: 2rem;
+      font-size: 1.75rem;
       cursor: pointer;
-      transition: all 0.2s;
-      box-shadow: var(--shadow);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2), 0 6px 20px rgba(0, 0, 0, 0.15);
       display: flex;
       align-items: center;
       justify-content: center;
-      margin: 0 auto;
+      z-index: 1000;
     }
 
-    .mic-button:hover {
+    .fab:hover {
       background: var(--primary-light);
-      transform: scale(1.05);
+      transform: scale(1.1);
+      box-shadow: 0 6px 12px rgba(0, 0, 0, 0.25), 0 8px 24px rgba(0, 0, 0, 0.2);
     }
 
-    .mic-button:active {
+    .fab:active {
       transform: scale(0.95);
     }
 
-    .mic-button.listening {
+    .fab.listening {
       background: var(--error);
       animation: pulse 1.5s ease-in-out infinite;
+      width: 72px;
+      height: 72px;
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
+      0%, 100% {
+        opacity: 1;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2), 0 0 0 0 rgba(220, 38, 38, 0.4);
+      }
+      50% {
+        opacity: 0.9;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2), 0 0 0 12px rgba(220, 38, 38, 0);
+      }
     }
 
-    .transcript-display {
-      margin-top: var(--spacing);
-      padding: var(--spacing);
-      background: var(--bg);
-      border-radius: var(--radius);
-      min-height: 60px;
-      font-size: 1.125rem;
+    /* Transcript overlay - only shown when listening */
+    .transcript-overlay {
+      position: fixed;
+      bottom: 104px;
+      right: 24px;
+      max-width: 320px;
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+      z-index: 999;
+      animation: slideUp 0.3s ease-out;
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .transcript-text {
+      font-size: 1rem;
       color: var(--text);
-      text-align: center;
+      line-height: 1.5;
+      min-height: 24px;
     }
 
-    .transcript-display.empty {
+    .transcript-text.empty {
       color: var(--text-light);
       font-style: italic;
     }
 
-    .error-message {
-      color: var(--error);
-      text-align: center;
-      padding: 0.5rem;
-      font-size: 0.875rem;
-    }
-
-    .hint {
-      text-align: center;
-      color: var(--text-light);
-      font-size: 1rem;
-      margin-top: 0.5rem;
-    }
-
     .visualizer {
-      height: 40px;
-      margin: var(--spacing) 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 4px;
+      gap: 3px;
+      margin-bottom: 0.75rem;
+      height: 24px;
     }
 
     .bar {
-      width: 4px;
-      height: 10px;
+      width: 3px;
+      height: 8px;
       background: var(--primary);
       border-radius: 2px;
       transition: height 0.1s;
     }
 
-    .listening .bar {
+    .visualizer.active .bar {
       animation: wave 1s ease-in-out infinite;
     }
 
+    .bar:nth-child(1) { animation-delay: 0s; }
     .bar:nth-child(2) { animation-delay: 0.1s; }
     .bar:nth-child(3) { animation-delay: 0.2s; }
     .bar:nth-child(4) { animation-delay: 0.3s; }
     .bar:nth-child(5) { animation-delay: 0.4s; }
 
     @keyframes wave {
-      0%, 100% { height: 10px; }
-      50% { height: 30px; }
+      0%, 100% { height: 8px; }
+      50% { height: 20px; }
+    }
+
+    .error-toast {
+      position: fixed;
+      bottom: 104px;
+      right: 24px;
+      background: var(--error);
+      color: white;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      z-index: 999;
+      animation: slideUp 0.3s ease-out;
+    }
+
+    .not-supported {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 1rem;
+      border-radius: 12px;
+      max-width: 280px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      z-index: 1000;
+      text-align: center;
+    }
+
+    .not-supported-title {
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: var(--error);
+    }
+
+    .not-supported-text {
+      font-size: 0.875rem;
+      color: var(--text-light);
     }
   `;
 
@@ -230,37 +276,42 @@ class VoiceInput extends LitElement {
   render() {
     if (!this.supported) {
       return html`
-        <div class="voice-container">
-          <p class="error-message">${this.error}</p>
-          <p class="hint">Please use a browser that supports voice recognition</p>
+        <div class="not-supported">
+          <div class="not-supported-title">Voice Not Supported</div>
+          <div class="not-supported-text">
+            Please use Chrome, Edge, or Safari for voice features
+          </div>
         </div>
       `;
     }
 
     return html`
-      <div class="voice-container">
-        ${this.error ? html`<p class="error-message">${this.error}</p>` : ''}
+      <!-- Floating Action Button -->
+      <button
+        class="fab ${this.listening ? 'listening' : ''}"
+        @click=${this.toggleListening}
+        aria-label="${this.listening ? 'Stop listening' : 'Start voice input'}"
+        title="${this.listening ? 'Stop listening' : 'Tap to speak'}"
+      >
+        ${this.listening ? '⏹️' : '🎤'}
+      </button>
 
-        <div class="visualizer ${this.listening ? 'listening' : ''}">
-          ${[...Array(5)].map(() => html`<div class="bar"></div>`)}
+      <!-- Transcript overlay - only shown when listening -->
+      ${this.listening ? html`
+        <div class="transcript-overlay">
+          <div class="visualizer active">
+            ${[...Array(5)].map(() => html`<div class="bar"></div>`)}
+          </div>
+          <div class="transcript-text ${this.transcript ? '' : 'empty'}">
+            ${this.transcript || 'Listening... speak now'}
+          </div>
         </div>
+      ` : ''}
 
-        <button
-          class="mic-button ${this.listening ? 'listening' : ''}"
-          @click=${this.toggleListening}
-          aria-label="${this.listening ? 'Stop listening' : 'Start listening'}"
-        >
-          ${this.listening ? '⏹️' : '🎤'}
-        </button>
-
-        <div class="transcript-display ${this.transcript ? '' : 'empty'}">
-          ${this.transcript || 'Tap the microphone and speak...'}
-        </div>
-
-        <p class="hint">
-          ${this.listening ? 'Listening... Speak clearly' : 'Press and hold to speak'}
-        </p>
-      </div>
+      <!-- Error toast -->
+      ${this.error && !this.listening ? html`
+        <div class="error-toast">${this.error}</div>
+      ` : ''}
     `;
   }
 }

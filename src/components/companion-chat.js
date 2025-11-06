@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { logConversation, getRecentConversations } from '../services/db-service.js';
 import { llmService } from '../services/llm-service.js';
+import { ttsService } from '../services/tts-service.js';
 
 /**
  * Companion Chat Component
@@ -20,7 +21,6 @@ class CompanionChat extends LitElement {
   static styles = css`
     :host {
       display: block;
-      margin-bottom: 140px;
     }
 
     .chat-container {
@@ -35,9 +35,11 @@ class CompanionChat extends LitElement {
       display: flex;
       flex-direction: column;
       gap: var(--spacing);
-      max-height: 60vh;
+      max-height: calc(100vh - 300px);
       overflow-y: auto;
       padding: var(--spacing);
+      padding-bottom: 2rem;
+      scroll-behavior: smooth;
     }
 
     .message {
@@ -163,7 +165,7 @@ class CompanionChat extends LitElement {
     this.llmLoading = false;
     this.llmProgress = { status: '', file: '', progress: 0, loaded: 0, total: 0 };
     this.llmReady = false;
-    this.ttsSupported = 'speechSynthesis' in window;
+    this.ttsReady = false;
   }
 
   async connectedCallback() {
@@ -179,12 +181,27 @@ class CompanionChat extends LitElement {
     // Listen for voice input from voice-input component
     window.addEventListener('voice-input', this.handleVoiceInput.bind(this));
 
+    // Initialize TTS service
+    await this.initializeTTS();
+
     // Initialize LLM in background
     this.initializeLLM();
 
     // Send welcome message if first time
     if (this.messages.length === 0 && this.profile) {
       this.addCompanionMessage(`Hello ${this.profile.name}! How can I help you today?`);
+    }
+  }
+
+  async initializeTTS() {
+    try {
+      await ttsService.initialize('browser');
+      this.ttsReady = true;
+      const currentVoice = ttsService.getCurrentVoice();
+      console.log('🔊 TTS initialized with voice:', currentVoice);
+    } catch (error) {
+      console.error('Failed to initialize TTS:', error);
+      this.ttsReady = false;
     }
   }
 
@@ -239,6 +256,14 @@ class CompanionChat extends LitElement {
       ...this.messages,
       { text, type: 'user', timestamp: new Date() }
     ];
+
+    // Auto-scroll to the latest message
+    this.updateComplete.then(() => {
+      const messagesContainer = this.shadowRoot.querySelector('.messages');
+      if (messagesContainer) {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+    });
   }
 
   addCompanionMessage(text) {
@@ -246,6 +271,14 @@ class CompanionChat extends LitElement {
       ...this.messages,
       { text, type: 'companion', timestamp: new Date() }
     ];
+
+    // Auto-scroll to the latest message
+    this.updateComplete.then(() => {
+      const messagesContainer = this.shadowRoot.querySelector('.messages');
+      if (messagesContainer) {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+    });
 
     // Speak the response using TTS
     this.speak(text);
@@ -323,8 +356,11 @@ class CompanionChat extends LitElement {
 
   async generateResponse(input) {
     // Use LLM if ready, otherwise fall back to simple responses
+    console.log('🤖 generateResponse called. llmReady:', this.llmReady, 'llmService.isReady():', llmService.isReady());
+
     if (this.llmReady && llmService.isReady()) {
       try {
+        console.log('🧠 Using LLM to generate response...');
         // Get recent conversation history for context
         const recentMessages = this.messages.slice(-6); // Last 3 exchanges
 
@@ -334,11 +370,14 @@ class CompanionChat extends LitElement {
           recentMessages
         );
 
+        console.log('✅ LLM response:', response);
         return response;
       } catch (error) {
-        console.error('LLM generation error:', error);
+        console.error('❌ LLM generation error:', error);
         // Fall through to fallback
       }
+    } else {
+      console.warn('⚠️  LLM not ready, using fallback responses');
     }
 
     // Fallback responses if LLM not ready or failed
@@ -351,27 +390,21 @@ class CompanionChat extends LitElement {
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
-  speak(text) {
-    if (!this.ttsSupported) {
+  async speak(text) {
+    if (!this.ttsReady) {
+      console.warn('TTS not ready');
       return;
     }
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9; // Slightly slower for elderly users
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-
-    // Try to use a clear, natural voice
-    const voices = speechSynthesis.getVoices();
-    const preferredVoice = voices.find(voice =>
-      voice.lang.startsWith('en') && voice.name.includes('Natural')
-    ) || voices[0];
-
-    if (preferredVoice) {
-      utterance.voice = preferredVoice;
+    try {
+      await ttsService.speak(text, {
+        rate: 0.9,  // Slightly slower for elderly users
+        pitch: 1.0,
+        volume: 1.0
+      });
+    } catch (error) {
+      console.error('Speech failed:', error);
     }
-
-    speechSynthesis.speak(utterance);
   }
 
   formatTime(timestamp) {
@@ -385,20 +418,22 @@ class CompanionChat extends LitElement {
     // Show LLM loading progress
     if (this.llmLoading) {
       const progress = this.llmProgress.progress || 0;
-      const progressPercent = Math.round(progress * 100);
+      const progressPercent = this.llmProgress.percentage || Math.round(progress * 100);
+      const loaded = this.llmProgress.loaded || '0 B';
+      const total = this.llmProgress.total || '600 MB';
 
       return html`
         <div class="llm-loading">
           <div class="llm-loading-title">🧠 Preparing your companion...</div>
           <div class="llm-loading-subtitle">
-            Downloading AI model (this happens once, then it's cached locally)
+            Downloading AI model (one-time download, ~600MB)
           </div>
           <div class="progress-bar">
             <div class="progress-fill" style="width: ${progressPercent}%"></div>
           </div>
           <div class="progress-text">
-            ${this.llmProgress.status || 'Loading'}: ${progressPercent}%
-            ${this.llmProgress.file ? `- ${this.llmProgress.file}` : ''}
+            ${progressPercent}% - ${loaded} / ${total}
+            ${this.llmProgress.file ? html`<br><small>${this.llmProgress.file}</small>` : ''}
           </div>
         </div>
       `;
