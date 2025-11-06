@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { logConversation, getRecentConversations } from '../services/db-service.js';
+import { llmService } from '../services/llm-service.js';
 
 /**
  * Companion Chat Component
@@ -10,7 +11,10 @@ class CompanionChat extends LitElement {
   static properties = {
     profile: { type: Object },
     messages: { type: Array },
-    processing: { type: Boolean }
+    processing: { type: Boolean },
+    llmLoading: { type: Boolean },
+    llmProgress: { type: Object },
+    llmReady: { type: Boolean }
   };
 
   static styles = css`
@@ -100,6 +104,55 @@ class CompanionChat extends LitElement {
       0%, 60%, 100% { opacity: 0.3; }
       30% { opacity: 1; }
     }
+
+    .llm-loading {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: var(--spacing);
+      margin-bottom: var(--spacing);
+      text-align: center;
+      box-shadow: var(--shadow);
+    }
+
+    .llm-loading-title {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    .llm-loading-subtitle {
+      font-size: 0.875rem;
+      color: var(--text-light);
+      margin-bottom: var(--spacing);
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: var(--bg);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 0.5rem;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--primary-light));
+      transition: width 0.3s ease;
+      animation: shimmer 2s infinite;
+    }
+
+    @keyframes shimmer {
+      0% { opacity: 0.7; }
+      50% { opacity: 1; }
+      100% { opacity: 0.7; }
+    }
+
+    .progress-text {
+      font-size: 0.75rem;
+      color: var(--text-light);
+    }
   `;
 
   constructor() {
@@ -107,6 +160,9 @@ class CompanionChat extends LitElement {
     this.profile = null;
     this.messages = [];
     this.processing = false;
+    this.llmLoading = false;
+    this.llmProgress = { status: '', file: '', progress: 0, loaded: 0, total: 0 };
+    this.llmReady = false;
     this.ttsSupported = 'speechSynthesis' in window;
   }
 
@@ -123,9 +179,39 @@ class CompanionChat extends LitElement {
     // Listen for voice input from voice-input component
     window.addEventListener('voice-input', this.handleVoiceInput.bind(this));
 
+    // Initialize LLM in background
+    this.initializeLLM();
+
     // Send welcome message if first time
     if (this.messages.length === 0 && this.profile) {
       this.addCompanionMessage(`Hello ${this.profile.name}! How can I help you today?`);
+    }
+  }
+
+  async initializeLLM() {
+    // Check if already initialized
+    if (llmService.isReady()) {
+      this.llmReady = true;
+      return;
+    }
+
+    this.llmLoading = true;
+
+    try {
+      await llmService.initialize((progress) => {
+        // Update progress
+        this.llmProgress = progress || { status: 'loading', progress: 0 };
+        this.requestUpdate();
+      });
+
+      this.llmReady = true;
+      console.log('LLM ready for conversations');
+    } catch (error) {
+      console.error('Failed to initialize LLM:', error);
+      this.llmReady = false;
+      // Still allow rule-based responses
+    } finally {
+      this.llmLoading = false;
     }
   }
 
@@ -236,10 +322,26 @@ class CompanionChat extends LitElement {
   }
 
   async generateResponse(input) {
-    // Placeholder for LLM integration
-    // TODO: Integrate Transformers.js with a small model
-    // For now, return context-aware fallback
+    // Use LLM if ready, otherwise fall back to simple responses
+    if (this.llmReady && llmService.isReady()) {
+      try {
+        // Get recent conversation history for context
+        const recentMessages = this.messages.slice(-6); // Last 3 exchanges
 
+        const response = await llmService.generate(
+          input,
+          this.profile,
+          recentMessages
+        );
+
+        return response;
+      } catch (error) {
+        console.error('LLM generation error:', error);
+        // Fall through to fallback
+      }
+    }
+
+    // Fallback responses if LLM not ready or failed
     const responses = [
       `I understand you said "${input}". How can I help you with that?`,
       "I'm here to help! Could you tell me more?",
@@ -280,11 +382,38 @@ class CompanionChat extends LitElement {
   }
 
   render() {
+    // Show LLM loading progress
+    if (this.llmLoading) {
+      const progress = this.llmProgress.progress || 0;
+      const progressPercent = Math.round(progress * 100);
+
+      return html`
+        <div class="llm-loading">
+          <div class="llm-loading-title">🧠 Preparing your companion...</div>
+          <div class="llm-loading-subtitle">
+            Downloading AI model (this happens once, then it's cached locally)
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: ${progressPercent}%"></div>
+          </div>
+          <div class="progress-text">
+            ${this.llmProgress.status || 'Loading'}: ${progressPercent}%
+            ${this.llmProgress.file ? `- ${this.llmProgress.file}` : ''}
+          </div>
+        </div>
+      `;
+    }
+
     if (this.messages.length === 0 && !this.processing) {
       return html`
         <div class="chat-container">
           <div class="welcome">
             <p>👋 Welcome! Tap the microphone below to start talking.</p>
+            ${!this.llmReady ? html`
+              <p style="color: var(--text-light); font-size: 0.875rem; margin-top: 1rem;">
+                AI companion is loading in the background...
+              </p>
+            ` : ''}
           </div>
         </div>
       `;
