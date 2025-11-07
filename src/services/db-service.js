@@ -23,7 +23,10 @@ db.version(1).stores({
   conversationLog: '++id, timestamp, input, output, type',
 
   // Model cache metadata
-  modelCache: 'key, lastUpdated'
+  modelCache: 'key, lastUpdated',
+
+  // API response cache (for NLU services)
+  apiCache: 'key, timestamp, ttl'
 });
 
 /**
@@ -111,3 +114,8 @@ export async function getProfile() {
   const result = await db.settings.get('profile');
   return result?.data;
 }
+
+/**
+ * Alias for getProfile (used by NLU services)
+ */
+export const getUserProfile = getProfile;
