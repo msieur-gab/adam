@@ -16,7 +16,7 @@ class TTSService {
     this.kokoroModel = null;
     this.kokoroLoading = false;
     this.kokoroReady = false;
-    this.kokoroVoice = 'af_bella'; // Default warm, natural voice
+    this.kokoroVoice = 'af_aoede'; // AOede - performs well, no scrambling
 
     // Web Audio API for Kokoro playback
     this.audioContext = null;
@@ -591,17 +591,27 @@ class TTSService {
 
   /**
    * Get available Kokoro voices
+   * Based on testing and community feedback
    */
   getKokoroVoices() {
     return [
-      { id: 'af_bella', name: 'Bella', description: 'Warm, friendly female voice (recommended for elderly care)' },
-      { id: 'af_sarah', name: 'Sarah', description: 'Clear, articulate female voice' },
-      { id: 'am_adam', name: 'Adam', description: 'Professional male voice' },
-      { id: 'am_michael', name: 'Michael', description: 'Deep, reassuring male voice' },
-      { id: 'bf_emma', name: 'Emma', description: 'Bright, cheerful female voice' },
-      { id: 'bf_isabella', name: 'Isabella', description: 'Elegant female voice' },
-      { id: 'bm_george', name: 'George', description: 'Calm, steady male voice' },
-      { id: 'bm_lewis', name: 'Lewis', description: 'Friendly male voice' }
+      // American English Female (recommended)
+      { id: 'af_aoede', name: 'Aoede', description: '⭐ High quality, no scrambling (recommended)', quality: 'excellent' },
+      { id: 'af_bella', name: 'Bella', description: 'Warm, friendly voice', quality: 'good' },
+      { id: 'af_sarah', name: 'Sarah', description: 'Clear, articulate voice', quality: 'good' },
+      { id: 'af_sky', name: 'Sky', description: 'Bright, energetic voice', quality: 'good' },
+
+      // American English Male
+      { id: 'am_adam', name: 'Adam', description: 'Professional male voice', quality: 'good' },
+      { id: 'am_michael', name: 'Michael', description: 'Deep, reassuring male voice', quality: 'good' },
+
+      // British English Female
+      { id: 'bf_emma', name: 'Emma', description: 'Bright British accent', quality: 'good' },
+      { id: 'bf_isabella', name: 'Isabella', description: 'Elegant British accent', quality: 'good' },
+
+      // British English Male
+      { id: 'bm_george', name: 'George', description: 'Calm British accent', quality: 'good' },
+      { id: 'bm_lewis', name: 'Lewis', description: 'Friendly British accent', quality: 'good' }
     ];
   }
 
@@ -733,4 +743,29 @@ export const ttsService = new TTSService();
 if (typeof window !== 'undefined') {
   window.ttsService = ttsService;
   window.checkMemory = () => ttsService.logMemoryStats();
+
+  // Helper to test different voices
+  window.testVoice = async (voiceId, text = "Hello, this is a test of the Kokoro voice.") => {
+    const voices = ttsService.getKokoroVoices();
+    const voice = voices.find(v => v.id === voiceId);
+
+    if (!voice) {
+      console.error('Voice not found. Available voices:');
+      voices.forEach(v => console.log(`  ${v.id} - ${v.name}: ${v.description}`));
+      return;
+    }
+
+    console.log(`🎤 Testing voice: ${voice.name} (${voiceId})`);
+    ttsService.setKokoroVoice(voiceId);
+    await ttsService.speak(text);
+  };
+
+  // Helper to list all voices
+  window.listVoices = () => {
+    console.log('🎤 Available Kokoro Voices:');
+    ttsService.getKokoroVoices().forEach(v => {
+      const star = v.quality === 'excellent' ? '⭐' : '';
+      console.log(`${star} ${v.id.padEnd(15)} - ${v.name.padEnd(10)} - ${v.description}`);
+    });
+  };
 }
