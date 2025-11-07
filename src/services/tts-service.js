@@ -1,16 +1,21 @@
 import { KokoroTTS } from 'kokoro-js';
+import SamJs from 'sam-js';
 
 /**
  * TTS Service for ADAM
- * Supports multiple TTS backends with Kokoro-js for premium quality
+ * Supports multiple TTS backends: SAM (retro), Kokoro (premium), Browser (fallback)
  */
 
 class TTSService {
   constructor() {
-    this.provider = 'kokoro'; // 'kokoro', 'browser', 'elevenlabs'
+    this.provider = 'sam'; // 'sam', 'kokoro', 'browser', 'elevenlabs'
     this.selectedVoice = null;
     this.apiKey = null;
     this.voicesLoaded = false;
+
+    // SAM-specific properties
+    this.samEngine = null;
+    this.samReady = false;
 
     // Kokoro-specific properties
     this.kokoroModel = null;
@@ -32,11 +37,14 @@ class TTSService {
   /**
    * Initialize TTS with best available provider
    */
-  async initialize(provider = 'kokoro', apiKey = null, onProgress = null) {
+  async initialize(provider = 'sam', apiKey = null, onProgress = null) {
     this.provider = provider;
     this.apiKey = apiKey;
 
     switch (provider) {
+      case 'sam':
+        await this.initializeSAM();
+        break;
       case 'kokoro':
         try {
           await this.initializeKokoro(onProgress);
@@ -55,7 +63,24 @@ class TTSService {
         await this.initializeBrowserTTS(); // Fallback
         break;
       default:
-        await this.initializeKokoro(onProgress).catch(() => this.initializeBrowserTTS());
+        await this.initializeSAM();
+    }
+  }
+
+  /**
+   * Initialize SAM (Software Automatic Mouth) - Retro 1980s TTS
+   */
+  async initializeSAM() {
+    try {
+      console.log('🎙️  Initializing SAM (Retro 1980s TTS)...');
+      this.samEngine = new SamJs();
+      this.samReady = true;
+      console.log('✅ SAM TTS ready - expect robotic Commodore 64 voice!');
+      return true;
+    } catch (error) {
+      console.error('Failed to initialize SAM:', error);
+      this.samReady = false;
+      throw error;
     }
   }
 
@@ -258,6 +283,13 @@ class TTSService {
     } = options;
 
     switch (this.provider) {
+      case 'sam':
+        if (this.samReady) {
+          return this.speakSAM(text, { pitch, rate });
+        } else {
+          console.warn('SAM not ready, falling back to browser TTS');
+          return this.speakBrowser(text, { rate, pitch, volume });
+        }
       case 'kokoro':
         if (this.kokoroReady) {
           return this.speakKokoro(text, { voice, rate });
@@ -273,6 +305,100 @@ class TTSService {
       default:
         return this.speakBrowser(text, { rate, pitch, volume });
     }
+  }
+
+  /**
+   * Speak using SAM (Software Automatic Mouth) - 1980s retro TTS
+   */
+  async speakSAM(text, { pitch = 64, rate = 72 }) {
+    try {
+      const startTime = performance.now();
+      console.log('🎙️  SAM speaking:', text.substring(0, 50) + '...');
+
+      // Configure SAM parameters (0-255)
+      this.samEngine.setPitch(pitch);     // Default 64 (0=high, 255=low)
+      this.samEngine.setSpeed(rate);      // Default 72 (0=fast, 255=slow)
+      this.samEngine.setMouth(128);       // Mouth size
+      this.samEngine.setThroat(128);      // Throat size
+
+      // Generate 8-bit audio buffer
+      const audioBuffer = this.samEngine.buf8(text);
+
+      if (!audioBuffer || audioBuffer.length === 0) {
+        throw new Error('SAM failed to generate audio');
+      }
+
+      const genTime = performance.now() - startTime;
+      console.log(`⚡ SAM generated in ${genTime.toFixed(0)}ms (instant!)`);
+
+      // Play using Web Audio API
+      await this.playSAMAudio(audioBuffer);
+
+      const totalTime = performance.now() - startTime;
+      console.log(`✅ Total SAM time: ${totalTime.toFixed(0)}ms`);
+
+    } catch (error) {
+      console.error('SAM speech failed:', error);
+      // Fallback to browser TTS
+      return this.speakBrowser(text, { rate: 0.9, pitch: 1.0, volume: 1.0 });
+    }
+  }
+
+  /**
+   * Play SAM audio buffer using Web Audio API
+   */
+  async playSAMAudio(uint8Buffer) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        // Create audio context if needed
+        if (!this.audioContext) {
+          this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        // SAM outputs 8-bit unsigned PCM at 22050 Hz
+        const sampleRate = 22050;
+        const samples = new Float32Array(uint8Buffer.length);
+
+        // Convert 8-bit unsigned to float32 (-1 to 1)
+        for (let i = 0; i < uint8Buffer.length; i++) {
+          samples[i] = (uint8Buffer[i] - 128) / 128.0;
+        }
+
+        // Create audio buffer
+        const audioBuffer = this.audioContext.createBuffer(
+          1, // mono
+          samples.length,
+          sampleRate
+        );
+
+        // Copy samples to buffer
+        audioBuffer.getChannelData(0).set(samples);
+
+        // Create buffer source
+        const source = this.audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(this.audioContext.destination);
+
+        // Resume context if suspended
+        if (this.audioContext.state === 'suspended') {
+          await this.audioContext.resume();
+        }
+
+        // Handle playback completion
+        source.onended = () => {
+          console.log('✅ SAM speech completed');
+          resolve();
+        };
+
+        // Start playback
+        source.start(0);
+        console.log('🔊 Playing SAM audio...');
+
+      } catch (error) {
+        console.error('❌ Failed to play SAM audio:', error);
+        reject(error);
+      }
+    });
   }
 
   /**
@@ -744,7 +870,20 @@ if (typeof window !== 'undefined') {
   window.ttsService = ttsService;
   window.checkMemory = () => ttsService.logMemoryStats();
 
-  // Helper to test different voices
+  // Helper to switch TTS engines
+  window.switchTTS = async (engine) => {
+    console.log(`🔄 Switching to ${engine} TTS...`);
+    await ttsService.initialize(engine);
+    console.log(`✅ Now using ${engine} TTS`);
+  };
+
+  // Helper to test SAM with different parameters
+  window.testSAM = async (text = "Hello world, this is SAM speaking.", pitch = 64, speed = 72) => {
+    console.log(`🎙️  Testing SAM (pitch: ${pitch}, speed: ${speed})`);
+    await ttsService.speakSAM(text, { pitch, rate: speed });
+  };
+
+  // Helper to test different Kokoro voices
   window.testVoice = async (voiceId, text = "Hello, this is a test of the Kokoro voice.") => {
     const voices = ttsService.getKokoroVoices();
     const voice = voices.find(v => v.id === voiceId);
@@ -768,4 +907,23 @@ if (typeof window !== 'undefined') {
       console.log(`${star} ${v.id.padEnd(15)} - ${v.name.padEnd(10)} - ${v.description}`);
     });
   };
+
+  // Helper to show all commands
+  window.ttsHelp = () => {
+    console.log('🎙️  TTS Testing Commands:');
+    console.log('');
+    console.log('  switchTTS("sam")       - Switch to SAM (instant, retro)');
+    console.log('  switchTTS("kokoro")    - Switch to Kokoro (slow, high quality)');
+    console.log('  switchTTS("browser")   - Switch to Browser TTS');
+    console.log('');
+    console.log('  testSAM("text")        - Test SAM with default settings');
+    console.log('  testSAM("text", 32, 100) - Test SAM (pitch 0-255, speed 0-255)');
+    console.log('');
+    console.log('  listVoices()           - Show Kokoro voices');
+    console.log('  testVoice("af_aoede")  - Test specific Kokoro voice');
+    console.log('');
+    console.log('Current TTS: ' + ttsService.provider);
+  };
+
+  console.log('💡 Type window.ttsHelp() for TTS testing commands');
 }

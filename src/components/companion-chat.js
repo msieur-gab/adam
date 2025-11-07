@@ -199,17 +199,13 @@ class CompanionChat extends LitElement {
     this.ttsLoading = true;
 
     try {
-      // Use Kokoro for high-quality speech
-      await ttsService.initialize('kokoro', null, (progress) => {
-        this.ttsProgress = progress || { status: 'loading', progress: 0 };
-        this.requestUpdate();
-      });
+      // Use SAM (retro TTS) - instant, no loading time!
+      await ttsService.initialize('sam');
 
       this.ttsReady = true;
-      const currentVoice = ttsService.getCurrentVoice();
-      console.log('🔊 TTS initialized with Kokoro voice:', currentVoice);
+      console.log('🔊 TTS initialized with SAM (Retro 1980s voice)');
     } catch (error) {
-      console.error('Failed to initialize Kokoro, falling back to browser TTS:', error);
+      console.error('Failed to initialize SAM, falling back to browser TTS:', error);
       // Fallback to browser TTS
       try {
         await ttsService.initialize('browser');
