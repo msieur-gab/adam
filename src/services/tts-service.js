@@ -60,7 +60,7 @@ class TTSService {
   }
 
   /**
-   * Initialize Kokoro TTS model
+   * Initialize Kokoro TTS model with smart GPU detection and automatic fallback
    */
   async initializeKokoro(onProgress = null) {
     if (this.kokoroReady) {
@@ -79,40 +79,114 @@ class TTSService {
 
     try {
       console.log('🎤 Loading Kokoro TTS model...');
+      this.logDeviceInfo(); // Log device capabilities
 
       const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-      // Force WASM + q8 for reliability (works everywhere)
-      // TODO: Fix WebGPU silent audio issue before re-enabling
-      const device = 'wasm';
-      const dtype = 'q8';
+      // Smart device detection: Try WebGPU first, fall back to WASM if needed
+      let device = await this.detectBestDevice();
+      let dtype = device === 'webgpu' ? 'fp32' : 'q8';
 
-      console.log('🚀 Using device:', device, 'with dtype:', dtype);
-      console.log('💡 Performance tip: WebGPU is 10-100x faster than WASM');
+      console.log('🚀 Attempting initialization with device:', device, 'dtype:', dtype);
 
-      this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
-        dtype: dtype,
-        device: device,
-        progress_callback: (progress) => {
-          if (onProgress) {
-            onProgress({
-              status: progress.status,
-              progress: progress.progress || 0,
-              loaded: progress.loaded || 0,
-              total: progress.total || 0,
-              file: progress.file || '',
-              device: device // Show which device we're using
-            });
+      // Try loading with detected device
+      let loadSuccess = false;
+      let webgpuFailed = false;
+
+      try {
+        this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
+          dtype: dtype,
+          device: device,
+          progress_callback: (progress) => {
+            if (onProgress) {
+              onProgress({
+                status: progress.status,
+                progress: progress.progress || 0,
+                loaded: progress.loaded || 0,
+                total: progress.total || 0,
+                file: progress.file || '',
+                device: device // Show which device we're using
+              });
+            }
           }
+        });
+
+        // Test audio generation with validation
+        console.log('🧪 Testing audio generation and validation...');
+        const testAudio = await this.kokoroModel.generate('Hello, this is a test.', {
+          voice: this.kokoroVoice,
+          speed: 1.0
+        });
+
+        // Validate audio data
+        const isValid = this.validateAudioData(testAudio);
+
+        if (!isValid && device === 'webgpu') {
+          webgpuFailed = true;
+          console.error('❌ WebGPU produced invalid/silent audio - this is a known Chrome bug on Android');
+          console.log('🔄 Falling back to WASM for reliability...');
+        } else {
+          loadSuccess = true;
+          console.log('✅ Audio validation passed!');
         }
-      });
+
+      } catch (deviceError) {
+        console.error(`Failed to load with ${device}:`, deviceError);
+        if (device === 'webgpu') {
+          webgpuFailed = true;
+          console.log('🔄 Falling back to WASM...');
+        } else {
+          throw deviceError; // WASM failed, nothing to fall back to
+        }
+      }
+
+      // Fallback to WASM if WebGPU failed
+      if (webgpuFailed && !loadSuccess) {
+        device = 'wasm';
+        dtype = 'q8';
+
+        console.log('🔄 Reinitializing with WASM fallback...');
+
+        this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
+          dtype: dtype,
+          device: device,
+          progress_callback: (progress) => {
+            if (onProgress) {
+              onProgress({
+                status: progress.status + ' (WASM fallback)',
+                progress: progress.progress || 0,
+                loaded: progress.loaded || 0,
+                total: progress.total || 0,
+                file: progress.file || '',
+                device: device
+              });
+            }
+          }
+        });
+
+        // Validate WASM audio too
+        const testAudio = await this.kokoroModel.generate('Hello, this is a test.', {
+          voice: this.kokoroVoice,
+          speed: 1.0
+        });
+
+        const isValid = this.validateAudioData(testAudio);
+        if (!isValid) {
+          throw new Error('Both WebGPU and WASM produced invalid audio');
+        }
+
+        console.log('✅ WASM fallback successful with valid audio');
+      }
 
       this.kokoroReady = true;
       this.kokoroLoading = false;
       this.kokoroDevice = device; // Store for debugging
       this.kokoroDtype = dtype;
+
       console.log(`✅ Kokoro TTS initialized successfully with ${device} (${dtype})`);
       console.log(`⚡ Expected generation time: ${device === 'webgpu' ? '50-200ms' : '200-1000ms'} per sentence`);
+      console.log(`📱 Device: ${navigator.userAgent}`);
+
       return true;
 
     } catch (error) {
@@ -143,6 +217,90 @@ class TTSService {
 
     console.log('⚠️  Using WASM (slower) - WebGPU not available');
     return 'wasm';
+  }
+
+  /**
+   * Validate audio data to detect silent/corrupted audio
+   * Returns true if audio appears valid, false otherwise
+   */
+  validateAudioData(audioData) {
+    if (!audioData || !audioData.audio || audioData.audio.length === 0) {
+      console.error('❌ Audio validation failed: No audio data');
+      return false;
+    }
+
+    const samples = audioData.audio;
+    const sampleRate = audioData.sampling_rate || 24000;
+
+    // Check a larger sample size for better accuracy
+    const checkSize = Math.min(1000, samples.length);
+    const sampleSlice = samples.slice(0, checkSize);
+
+    const minSample = Math.min(...sampleSlice);
+    const maxSample = Math.max(...sampleSlice);
+    const avgAbsSample = sampleSlice.reduce((a, b) => a + Math.abs(b), 0) / sampleSlice.length;
+
+    console.log('🔍 Audio validation stats:', {
+      samples: samples.length,
+      duration: (samples.length / sampleRate).toFixed(2) + 's',
+      minSample: minSample.toFixed(6),
+      maxSample: maxSample.toFixed(6),
+      avgAbsSample: avgAbsSample.toFixed(6)
+    });
+
+    // Check for silent audio (known WebGPU bug)
+    if (Math.abs(maxSample) < 0.001 && Math.abs(minSample) < 0.001) {
+      console.error('❌ Audio validation failed: Audio is silent (max/min < 0.001)');
+      return false;
+    }
+
+    // Check for reasonable average amplitude
+    if (avgAbsSample < 0.0001) {
+      console.error('❌ Audio validation failed: Average amplitude too low');
+      return false;
+    }
+
+    // Check for unnormalized data (too large)
+    if (Math.abs(maxSample) > 10 || Math.abs(minSample) > 10) {
+      console.warn('⚠️  Audio values seem unnormalized (very large)');
+      // Don't fail, just warn - might still be playable
+    }
+
+    console.log('✅ Audio validation passed - audio appears valid');
+    return true;
+  }
+
+  /**
+   * Log device and browser information for debugging
+   */
+  logDeviceInfo() {
+    const info = {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      language: navigator.language,
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      deviceMemory: navigator.deviceMemory ? `${navigator.deviceMemory}GB` : 'unknown',
+      hasWebGPU: 'gpu' in navigator,
+      hasWebGL: !!document.createElement('canvas').getContext('webgl'),
+      hasWebGL2: !!document.createElement('canvas').getContext('webgl2')
+    };
+
+    console.log('📱 Device Information:');
+    console.table(info);
+
+    // Additional WebGPU info if available
+    if ('gpu' in navigator) {
+      navigator.gpu.requestAdapter().then(adapter => {
+        if (adapter) {
+          console.log('🎮 WebGPU Adapter Info:', {
+            vendor: adapter.info?.vendor || 'unknown',
+            architecture: adapter.info?.architecture || 'unknown',
+            device: adapter.info?.device || 'unknown',
+            description: adapter.info?.description || 'unknown'
+          });
+        }
+      }).catch(e => console.log('WebGPU adapter info unavailable:', e.message));
+    }
   }
 
   /**
