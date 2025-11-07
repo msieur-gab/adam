@@ -82,13 +82,15 @@ class TTSService {
 
       const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-      // Use WASM for stability with q8
-      // Note: WebGPU + q8 produces silent audio (incompatibility issue)
-      // WASM is slower but 100% reliable
-      const device = 'wasm';
-      const dtype = 'q8'; // High quality, works reliably with WASM
+      // Auto-detect best device (WebGPU is 10-100x faster than WASM)
+      const device = await this.detectBestDevice();
+
+      // WebGPU requires fp32 or q4 (q8 produces silent audio on WebGPU)
+      // WASM works best with q8 for quality
+      const dtype = device === 'webgpu' ? 'fp32' : 'q8';
 
       console.log('🚀 Using device:', device, 'with dtype:', dtype);
+      console.log('💡 Performance tip: WebGPU is 10-100x faster than WASM');
 
       this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
         dtype: dtype,
@@ -109,7 +111,10 @@ class TTSService {
 
       this.kokoroReady = true;
       this.kokoroLoading = false;
-      console.log('✅ Kokoro TTS initialized successfully with', device);
+      this.kokoroDevice = device; // Store for debugging
+      this.kokoroDtype = dtype;
+      console.log(`✅ Kokoro TTS initialized successfully with ${device} (${dtype})`);
+      console.log(`⚡ Expected generation time: ${device === 'webgpu' ? '50-200ms' : '200-1000ms'} per sentence`);
       return true;
 
     } catch (error) {
@@ -273,9 +278,10 @@ class TTSService {
   }
 
   /**
-   * Speak using Kokoro TTS
+   * Speak using Kokoro TTS with progressive sentence-level playback
+   * This plays sentences as they're generated for faster perceived response
    */
-  async speakKokoro(text, { voice = null, rate = 0.9 }) {
+  async speakKokoro(text, { voice = null, rate = 0.9, progressive = true }) {
     try {
       const startTime = performance.now();
       console.log('🎤 Generating speech with Kokoro:', text.substring(0, 50) + '...');
@@ -283,7 +289,12 @@ class TTSService {
       // Use provided voice or default
       const selectedVoice = voice || this.kokoroVoice;
 
-      // Create cache key
+      // Progressive mode: split into sentences and play as we generate
+      if (progressive && text.length > 100) {
+        return await this.speakKokoroProgressive(text, { voice: selectedVoice, rate });
+      }
+
+      // Standard mode: generate and cache full text
       const cacheKey = `${selectedVoice}:${rate}:${text}`;
 
       // Check cache first
@@ -321,6 +332,64 @@ class TTSService {
       console.log('Falling back to browser TTS');
       return this.speakBrowser(text, { rate: 0.9, pitch: 1.0, volume: 1.0 });
     }
+  }
+
+  /**
+   * Progressive sentence-level playback
+   * Splits text into sentences and plays them as they're generated
+   * This dramatically improves perceived performance
+   */
+  async speakKokoroProgressive(text, { voice, rate }) {
+    const startTime = performance.now();
+    const sentences = this.splitIntoSentences(text);
+
+    console.log(`🚀 Progressive playback: ${sentences.length} sentences`);
+
+    for (let i = 0; i < sentences.length; i++) {
+      const sentence = sentences[i].trim();
+      if (!sentence) continue;
+
+      const sentenceStart = performance.now();
+
+      // Check cache for this sentence
+      const cacheKey = `${voice}:${rate}:${sentence}`;
+      let audioData = this.audioCache.get(cacheKey);
+
+      if (!audioData) {
+        // Generate audio for this sentence
+        audioData = await this.kokoroModel.generate(sentence, {
+          voice: voice,
+          speed: rate
+        });
+
+        const genTime = performance.now() - sentenceStart;
+        console.log(`📝 Sentence ${i + 1}/${sentences.length}: ${genTime.toFixed(0)}ms - "${sentence.substring(0, 40)}..."`);
+
+        // Cache this sentence
+        this.cacheAudio(cacheKey, audioData);
+      } else {
+        console.log(`⚡ Cached sentence ${i + 1}/${sentences.length}`);
+      }
+
+      // Play immediately
+      await this.playKokoroAudio(audioData);
+    }
+
+    const totalTime = performance.now() - startTime;
+    console.log(`✅ Progressive playback complete: ${totalTime.toFixed(0)}ms total`);
+  }
+
+  /**
+   * Split text into sentences for progressive playback
+   */
+  splitIntoSentences(text) {
+    // Split on sentence boundaries (. ! ?) followed by space or end
+    // Keep the punctuation with the sentence
+    return text
+      .replace(/([.!?])\s+/g, '$1|')  // Replace sentence boundaries with delimiter
+      .split('|')                      // Split on delimiter
+      .map(s => s.trim())              // Trim whitespace
+      .filter(s => s.length > 0);      // Remove empty strings
   }
 
   /**

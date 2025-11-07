@@ -79,6 +79,7 @@ class AdamApp extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     await this.initialize();
+    this.registerServiceWorker();
   }
 
   async initialize() {
@@ -101,6 +102,36 @@ class AdamApp extends LitElement {
     } catch (error) {
       console.error('Failed to initialize:', error);
       this.loading = false;
+    }
+  }
+
+  /**
+   * Register service worker for offline support and model caching
+   */
+  async registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js', {
+          scope: '/'
+        });
+
+        console.log('✅ Service Worker registered:', registration.scope);
+
+        // Listen for updates
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          console.log('🔄 Service Worker update found');
+
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              console.log('✨ New version available! Refresh to update.');
+            }
+          });
+        });
+
+      } catch (error) {
+        console.warn('Service Worker registration failed:', error);
+      }
     }
   }
 
