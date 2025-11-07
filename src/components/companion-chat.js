@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { logConversation, getRecentConversations } from '../services/db-service.js';
 import { conversationService } from '../services/conversation-service.js';
+import { enhancedConversationService } from '../services/enhanced-conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
 
 /**
@@ -287,10 +288,28 @@ class CompanionChat extends LitElement {
     this.processing = true;
 
     try {
-      // Use conversation service for intelligent rule-based responses
-      const response = await conversationService.generateResponse(input, this.profile);
-      this.addCompanionMessage(response);
-      await logConversation(input, response, 'rule-based');
+      // Use enhanced conversation service with NLU (can fallback to old service if needed)
+      const USE_ENHANCED_NLU = true; // Feature flag - set to false to use old service
+
+      if (USE_ENHANCED_NLU) {
+        const result = await enhancedConversationService.generateResponse(input, this.profile);
+        const responseText = result.text;
+
+        // Log enhanced metadata
+        console.log('[CompanionChat] Enhanced response:', {
+          intent: result.response?.intent,
+          confidence: result.response?.confidence,
+          nlu: result.nlu
+        });
+
+        this.addCompanionMessage(responseText);
+        await logConversation(input, responseText, 'nlu-enhanced');
+      } else {
+        // Fallback to original conversation service
+        const response = await conversationService.generateResponse(input, this.profile);
+        this.addCompanionMessage(response);
+        await logConversation(input, response, 'rule-based');
+      }
     } catch (error) {
       console.error('Failed to process input:', error);
       this.addCompanionMessage("I'm sorry, I didn't quite catch that. Could you try again?");

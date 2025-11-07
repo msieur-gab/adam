@@ -26,6 +26,23 @@ db.version(1).stores({
   modelCache: 'key, lastUpdated'
 });
 
+// Version 2: Add user profile and API cache
+db.version(2).stores({
+  // Keep all existing tables
+  settings: 'key, data',
+  reminders: '++id, type, scheduledFor, completed, completedAt',
+  messages: '++id, from, receivedAt, acknowledged',
+  photos: '++id, familyMember, uploadedAt',
+  conversationLog: '++id, timestamp, input, output, type',
+  modelCache: 'key, lastUpdated',
+
+  // New: User profile table
+  userProfile: 'key, data',
+
+  // New: API cache for external service responses
+  apiCache: 'key, timestamp, ttl'
+});
+
 /**
  * Initialize default data if needed
  */
@@ -35,6 +52,9 @@ export async function initializeDatabase() {
 
     if (!profileExists) {
       console.log('No profile found - awaiting family configuration');
+    } else {
+      // Migrate to new user profile structure
+      await migrateToUserProfile();
     }
 
     // Check for due reminders on startup
@@ -110,4 +130,117 @@ export async function saveProfile(profileData) {
 export async function getProfile() {
   const result = await db.settings.get('profile');
   return result?.data;
+}
+
+/**
+ * Store user profile (personal data for context-aware responses)
+ */
+export async function saveUserProfile(profileData) {
+  return db.userProfile.put({
+    key: 'user',
+    data: profileData
+  });
+}
+
+/**
+ * Get user profile
+ */
+export async function getUserProfile() {
+  const result = await db.userProfile.get('user');
+  return result?.data;
+}
+
+/**
+ * Update specific user profile fields
+ */
+export async function updateUserProfile(updates) {
+  const current = await getUserProfile();
+  const updated = { ...current, ...updates };
+  return saveUserProfile(updated);
+}
+
+/**
+ * Migrate existing profile to new user profile structure
+ */
+export async function migrateToUserProfile() {
+  try {
+    // Check if migration already done
+    const existingUserProfile = await getUserProfile();
+    if (existingUserProfile) {
+      console.log('User profile already migrated');
+      return existingUserProfile;
+    }
+
+    // Get existing profile
+    const oldProfile = await getProfile();
+    if (!oldProfile) {
+      console.log('No existing profile to migrate');
+      return null;
+    }
+
+    // Create new user profile structure
+    const userProfile = {
+      // Identity
+      name: oldProfile.name || '',
+      nickname: oldProfile.nickname || '',
+      birthdate: oldProfile.birthdate || null,
+      age: oldProfile.age || null,
+
+      // Location & Timezone
+      location: {
+        city: oldProfile.location?.city || '',
+        country: oldProfile.location?.country || '',
+        timezone: oldProfile.habits?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+        coordinates: oldProfile.location?.coordinates || null
+      },
+
+      // Preferences
+      preferences: {
+        language: 'en',
+        voiceGender: 'female',
+        temperatureUnit: 'celsius',
+        dateFormat: 'DD/MM/YYYY',
+        timeFormat: '24h'
+      },
+
+      // Context for responses
+      interests: oldProfile.activities || [],
+
+      // Health (keep existing structure)
+      medications: oldProfile.medications || [],
+      doctors: oldProfile.doctors || [],
+      diet: oldProfile.diet || [],
+
+      // Family (keep existing structure)
+      family: oldProfile.family || [],
+
+      // Habits
+      habits: oldProfile.habits || {},
+
+      // Memory & Learning
+      conversationPreferences: {
+        formality: 'casual',
+        verbosity: 'moderate',
+        topicsToAvoid: []
+      },
+
+      // Privacy
+      shareLocation: true,
+      shareBirthdate: true,
+
+      // Metadata
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    // Save new user profile
+    await saveUserProfile(userProfile);
+    console.log('Profile migrated to user profile structure');
+
+    return userProfile;
+
+  } catch (error) {
+    console.error('Profile migration failed:', error);
+    return null;
+  }
 }
