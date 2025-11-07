@@ -164,6 +164,12 @@ class CompanionChat extends LitElement {
     this.ttsReady = false;
     this.ttsLoading = false;
     this.ttsProgress = { status: '', progress: 0, loaded: 0, total: 0 };
+
+    // Bind handler once for proper cleanup (prevents memory leak)
+    this.boundVoiceInputHandler = this.handleVoiceInput.bind(this);
+
+    // Limit message history to prevent unbounded growth
+    this.maxMessages = 100; // Keep last 100 messages
   }
 
   async connectedCallback() {
@@ -177,7 +183,7 @@ class CompanionChat extends LitElement {
     ])).flat();
 
     // Listen for voice input from voice-input component
-    window.addEventListener('voice-input', this.handleVoiceInput.bind(this));
+    window.addEventListener('voice-input', this.boundVoiceInputHandler);
 
     // Initialize TTS service
     await this.initializeTTS();
@@ -211,7 +217,13 @@ class CompanionChat extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    window.removeEventListener('voice-input', this.handleVoiceInput.bind(this));
+    window.removeEventListener('voice-input', this.boundVoiceInputHandler);
+
+    // Stop any ongoing TTS
+    ttsService.stop();
+
+    // Clear messages to free memory
+    this.messages = [];
   }
 
   async handleVoiceInput(event) {
@@ -234,6 +246,11 @@ class CompanionChat extends LitElement {
       { text, type: 'user', timestamp: new Date() }
     ];
 
+    // Limit message history to prevent memory leaks
+    if (this.messages.length > this.maxMessages) {
+      this.messages = this.messages.slice(-this.maxMessages);
+    }
+
     // Auto-scroll to the latest message
     this.updateComplete.then(() => {
       const messagesContainer = this.shadowRoot.querySelector('.messages');
@@ -248,6 +265,11 @@ class CompanionChat extends LitElement {
       ...this.messages,
       { text, type: 'companion', timestamp: new Date() }
     ];
+
+    // Limit message history to prevent memory leaks
+    if (this.messages.length > this.maxMessages) {
+      this.messages = this.messages.slice(-this.maxMessages);
+    }
 
     // Auto-scroll to the latest message
     this.updateComplete.then(() => {

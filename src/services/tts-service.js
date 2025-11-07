@@ -25,6 +25,8 @@ class TTSService {
     // Audio cache for common responses
     this.audioCache = new Map();
     this.maxCacheSize = 20; // Cache up to 20 common responses
+    this.cacheMemoryLimit = 50 * 1024 * 1024; // 50MB limit for audio cache
+    this.currentCacheSize = 0; // Track memory usage
   }
 
   /**
@@ -80,17 +82,17 @@ class TTSService {
 
       const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-      // Detect best device (WebGPU > WASM)
-      const device = await this.detectBestDevice();
-      console.log('🚀 Using device:', device);
+      // Use WASM for stability with q8
+      // Note: WebGPU + q8 produces silent audio (incompatibility issue)
+      // WASM is slower but 100% reliable
+      const device = 'wasm';
+      const dtype = 'q8'; // High quality, works reliably with WASM
 
-      // Use q8 as minimum quality standard
-      // Options: 'fp32' (best quality, slowest), 'q8' (good balance)
-      const dtype = 'q8'; // Always use q8 for consistent high quality
+      console.log('🚀 Using device:', device, 'with dtype:', dtype);
 
       this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
         dtype: dtype,
-        device: device, // WebGPU if available, WASM fallback
+        device: device,
         progress_callback: (progress) => {
           if (onProgress) {
             onProgress({
@@ -322,19 +324,63 @@ class TTSService {
   }
 
   /**
-   * Cache audio for faster playback
+   * Cache audio for faster playback with memory management
    */
   cacheAudio(key, audioData) {
-    // Implement LRU cache - remove oldest if at capacity
+    // Calculate size of this audio sample (Float32Array bytes)
+    const audioSize = audioData.audio.length * 4; // 4 bytes per float32
+
+    // Check memory limit
+    if (this.currentCacheSize + audioSize > this.cacheMemoryLimit) {
+      console.log('⚠️  Cache memory limit reached, clearing oldest entries');
+      this.clearOldestCacheEntries(audioSize);
+    }
+
+    // Implement LRU cache - remove oldest if at count capacity
     if (this.audioCache.size >= this.maxCacheSize) {
       const firstKey = this.audioCache.keys().next().value;
+      const firstData = this.audioCache.get(firstKey);
+      const firstSize = firstData.audio.length * 4;
       this.audioCache.delete(firstKey);
+      this.currentCacheSize -= firstSize;
     }
 
     // Mark as cached for logging
     audioData.cached = true;
+    audioData.cacheSize = audioSize;
     this.audioCache.set(key, audioData);
-    console.log(`💾 Cached audio (${this.audioCache.size}/${this.maxCacheSize})`);
+    this.currentCacheSize += audioSize;
+
+    const sizeMB = (this.currentCacheSize / (1024 * 1024)).toFixed(2);
+    console.log(`💾 Cached audio (${this.audioCache.size}/${this.maxCacheSize}, ${sizeMB}MB)`);
+  }
+
+  /**
+   * Clear oldest cache entries to free memory
+   */
+  clearOldestCacheEntries(neededSpace) {
+    let freedSpace = 0;
+    const entries = Array.from(this.audioCache.entries());
+
+    for (const [key, data] of entries) {
+      if (freedSpace >= neededSpace) break;
+
+      const size = data.cacheSize || (data.audio.length * 4);
+      this.audioCache.delete(key);
+      this.currentCacheSize -= size;
+      freedSpace += size;
+    }
+
+    console.log(`🗑️  Freed ${(freedSpace / (1024 * 1024)).toFixed(2)}MB from cache`);
+  }
+
+  /**
+   * Clear all cached audio
+   */
+  clearCache() {
+    this.audioCache.clear();
+    this.currentCacheSize = 0;
+    console.log('🗑️  Audio cache cleared');
   }
 
   /**
@@ -348,9 +394,46 @@ class TTSService {
           this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
         }
 
+        // Debug: Log audio data structure
+        console.log('🔍 Audio data structure:', {
+          hasAudio: !!audioData.audio,
+          audioType: audioData.audio?.constructor?.name,
+          audioLength: audioData.audio?.length,
+          samplingRate: audioData.sampling_rate,
+          keys: Object.keys(audioData)
+        });
+
         // Get audio samples from Kokoro output
         const samples = audioData.audio; // Float32Array of audio samples
         const sampleRate = audioData.sampling_rate || 24000; // Kokoro default sample rate
+
+        // Check sample values for issues
+        const sampleSlice = samples.slice(0, 100);
+        const minSample = Math.min(...sampleSlice);
+        const maxSample = Math.max(...sampleSlice);
+        const avgSample = sampleSlice.reduce((a, b) => a + Math.abs(b), 0) / sampleSlice.length;
+
+        console.log('🎵 Audio details:', {
+          sampleRate,
+          samplesLength: samples?.length,
+          duration: (samples?.length / sampleRate).toFixed(2) + 's',
+          minSample: minSample.toFixed(4),
+          maxSample: maxSample.toFixed(4),
+          avgAbsSample: avgSample.toFixed(4),
+          firstFewSamples: Array.from(samples.slice(0, 10)).map(s => s.toFixed(4))
+        });
+
+        // Check if audio seems valid
+        if (Math.abs(maxSample) < 0.001 && Math.abs(minSample) < 0.001) {
+          console.warn('⚠️  Audio appears to be silent or nearly silent');
+        }
+        if (Math.abs(maxSample) > 10 || Math.abs(minSample) > 10) {
+          console.warn('⚠️  Audio values seem unnormalized (too large)');
+        }
+
+        if (!samples || samples.length === 0) {
+          throw new Error('No audio samples in Kokoro output');
+        }
 
         // Create audio buffer
         const audioBuffer = this.audioContext.createBuffer(
@@ -544,7 +627,50 @@ class TTSService {
       voice: this.getCurrentVoice()
     };
   }
+
+  /**
+   * Get memory usage statistics
+   */
+  getMemoryStats() {
+    const cacheSizeMB = (this.currentCacheSize / (1024 * 1024)).toFixed(2);
+    const cacheLimit = (this.cacheMemoryLimit / (1024 * 1024)).toFixed(2);
+    const usage = ((this.currentCacheSize / this.cacheMemoryLimit) * 100).toFixed(1);
+
+    // Try to get browser memory info if available
+    let browserMemory = 'Not available';
+    if (performance.memory) {
+      const usedMB = (performance.memory.usedJSHeapSize / (1024 * 1024)).toFixed(2);
+      const limitMB = (performance.memory.jsHeapSizeLimit / (1024 * 1024)).toFixed(2);
+      browserMemory = `${usedMB}MB / ${limitMB}MB`;
+    }
+
+    return {
+      cacheEntries: this.audioCache.size,
+      maxCacheEntries: this.maxCacheSize,
+      cacheSize: `${cacheSizeMB}MB`,
+      cacheLimit: `${cacheLimit}MB`,
+      cacheUsage: `${usage}%`,
+      browserMemory: browserMemory,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Log memory statistics to console
+   */
+  logMemoryStats() {
+    const stats = this.getMemoryStats();
+    console.log('📊 TTS Memory Statistics:');
+    console.table(stats);
+    return stats;
+  }
 }
 
 // Singleton instance
 export const ttsService = new TTSService();
+
+// Make available globally for debugging
+if (typeof window !== 'undefined') {
+  window.ttsService = ttsService;
+  window.checkMemory = () => ttsService.logMemoryStats();
+}
