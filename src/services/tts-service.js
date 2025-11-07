@@ -82,12 +82,10 @@ class TTSService {
 
       const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-      // Auto-detect best device (WebGPU is 10-100x faster than WASM)
-      const device = await this.detectBestDevice();
-
-      // WebGPU requires fp32 or q4 (q8 produces silent audio on WebGPU)
-      // WASM works best with q8 for quality
-      const dtype = device === 'webgpu' ? 'fp32' : 'q8';
+      // Force WASM + q8 for reliability (works everywhere)
+      // TODO: Fix WebGPU silent audio issue before re-enabling
+      const device = 'wasm';
+      const dtype = 'q8';
 
       console.log('🚀 Using device:', device, 'with dtype:', dtype);
       console.log('💡 Performance tip: WebGPU is 10-100x faster than WASM');
