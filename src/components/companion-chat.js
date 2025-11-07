@@ -199,16 +199,14 @@ class CompanionChat extends LitElement {
     this.ttsLoading = true;
 
     try {
-      await ttsService.initialize('kokoro', null, (progress) => {
-        this.ttsProgress = progress || { status: 'loading', progress: 0 };
-        this.requestUpdate();
-      });
+      // Try browser TTS first (fast, reliable)
+      await ttsService.initialize('browser');
 
       this.ttsReady = true;
       const currentVoice = ttsService.getCurrentVoice();
-      console.log('🔊 TTS initialized with Kokoro voice:', currentVoice);
+      console.log('🔊 TTS initialized with browser voice:', currentVoice);
     } catch (error) {
-      console.error('Failed to initialize Kokoro TTS:', error);
+      console.error('Failed to initialize TTS:', error);
       this.ttsReady = false;
     } finally {
       this.ttsLoading = false;
