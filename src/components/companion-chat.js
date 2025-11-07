@@ -311,7 +311,10 @@ class CompanionChat extends LitElement {
         volume: 1.0
       });
     } catch (error) {
-      console.error('Speech failed:', error);
+      // "interrupted" is normal when new speech starts
+      if (error !== 'interrupted') {
+        console.error('Speech failed:', error);
+      }
     }
   }
 
