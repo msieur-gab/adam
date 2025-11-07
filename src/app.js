@@ -111,8 +111,12 @@ class AdamApp extends LitElement {
   async registerServiceWorker() {
     if ('serviceWorker' in navigator) {
       try {
-        const registration = await navigator.serviceWorker.register('/sw.js', {
-          scope: '/'
+        // Use correct base path for GitHub Pages or local dev
+        const base = import.meta.env.BASE_URL || '/';
+        const swPath = `${base}sw.js`.replace(/\/+/g, '/'); // Normalize slashes
+
+        const registration = await navigator.serviceWorker.register(swPath, {
+          scope: base
         });
 
         console.log('✅ Service Worker registered:', registration.scope);
