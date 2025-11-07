@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - 'claude/**'  # Allow deployment from claude branches for testing
   workflow_dispatch:
 
 permissions:
@@ -45,8 +46,9 @@ jobs:
           path: './dist'
 
   deploy:
+    # Only require approval for master branch deploys
     environment:
-      name: github-pages
+      name: ${{ github.ref == 'refs/heads/master' && 'github-pages' || 'github-pages-preview' }}
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
