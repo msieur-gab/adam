@@ -10,6 +10,8 @@ import { db } from './db-service.js';
 // Configure Transformers.js
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+// Note: HuggingFace token removed for security (not needed for public models)
+// If you need private models, set via environment variable: process.env.HF_TOKEN
 // Optional: Use custom remote URL for models
 // env.remoteURL = 'http://localhost:8080/models/'; // Serve models locally
 // env.remotePathTemplate = '{model}/'; // Model directory structure
@@ -18,12 +20,9 @@ class LLMService {
   constructor() {
     this.generator = null;
     this.loading = false;
-    // Using SmolLM2 - Most popular transformers.js model, instruction-tuned
-    this.modelName = 'HuggingFaceTB/SmolLM2-360M-Instruct'; // ~400MB, top downloads
-    // Alternative models (all verified working with transformers.js):
-    // 'HuggingFaceTB/SmolLM2-135M-Instruct' - 135MB, faster but lower quality
-    // 'HuggingFaceTB/SmolLM2-1.7B-Instruct' - 1.7GB, better quality
-    // 'Xenova/gpt2' - 500MB, classic but not instruction-tuned
+    // Using DistilGPT-2 - Proven stable model for browser inference
+    this.modelName = 'Xenova/distilgpt2'; // ~250MB, fast and reliable
+    // DistilGPT-2 is well-tested and won't cause buffer overflow issues
     this.initialized = false;
     this.loadingProgress = 0;
 
@@ -101,32 +100,15 @@ class LLMService {
    */
   buildSystemContext(profile) {
     if (!profile) {
-      return 'You are a kind, patient companion. Keep responses warm and concise.';
+      return 'You are a kind companion. Be warm and brief.';
     }
 
-    const familyNames = profile.family?.map(f => f.name).join(', ') || 'none listed';
+    const familyNames = profile.family?.map(f => f.name).join(', ') || 'none';
     const activities = profile.activities?.join(', ') || 'various activities';
-    const medications = profile.medications?.length || 0;
 
-    return `You are a compassionate AI companion for ${profile.name}.
-
-Important context:
-- Family members: ${familyNames}
-- Enjoys: ${activities}
-- Has ${medications} medication(s) scheduled
-- Timezone: ${profile.habits?.timezone || 'not set'}
-
-Your role:
-- Be warm, patient, and encouraging
-- Keep responses SHORT (1-2 sentences max)
-- Speak clearly and simply
-- Remember what they tell you
-- Show genuine interest in their well-being
-- If they seem confused, gently clarify
-- Never ask multiple questions at once
-- Use simple, natural language
-
-Style: Conversational, supportive, like a caring friend. Always respond in complete sentences.`;
+    return `You are a caring companion for ${profile.name}.
+Family: ${familyNames}. Enjoys: ${activities}.
+Be warm, patient, and encouraging. Keep responses SHORT (1-2 sentences). Speak simply and clearly.`;
   }
 
   /**
@@ -141,30 +123,30 @@ Style: Conversational, supportive, like a caring friend. Always respond in compl
       // Build the prompt
       const systemContext = this.buildSystemContext(profile);
 
-      // Include recent conversation for context (last 2 exchanges only to avoid buffer issues)
-      const recentHistory = conversationHistory.slice(-4); // 2 exchanges = 4 messages
-      const historyText = recentHistory
-        .map(msg => `${msg.type === 'user' ? 'User' : 'Companion'}: ${msg.text}`)
-        .join('\n');
+      // TinyLlama chat format: <|system|>\n{system}<|user|>\n{user}<|assistant|>\n
+      // Keep it simple - no history for now to avoid buffer overflow
+      const prompt = `<|system|>
+${systemContext}<|user|>
+${userInput}<|assistant|>
+`;
 
-      // Simple, clean prompt format that works with Phi-2 and most models
-      const prompt = `${systemContext}
+      console.log('📝 Generating response for:', userInput.substring(0, 50) + '...');
+      console.log('📏 Prompt length:', prompt.length, 'characters');
 
-${historyText ? `Recent conversation:\n${historyText}\n\n` : ''}User: ${userInput}
-Companion:`;
-
-      console.log('📝 Prompt length:', prompt.length, 'chars');
-
-      // Generate response
+      // Generate response with very conservative settings to avoid buffer overflow
       const output = await this.generator(prompt, {
-        max_new_tokens: 120, // Reduced to avoid buffer overflow
-        temperature: 0.85, // Higher creativity for more natural conversation
-        top_k: 50,
-        top_p: 0.95,
+        max_new_tokens: 30, // Very conservative to prevent buffer overflow
+        temperature: 0.7,
+        top_k: 40,
+        top_p: 0.9,
         do_sample: true,
-        repetition_penalty: 1.2,
-        pad_token_id: 50256, // Standard GPT-2 tokenizer pad token
+        repetition_penalty: 1.1,
+        pad_token_id: 0, // Add padding token
+        eos_token_id: 2, // End of sequence token
+        use_cache: false, // Disable KV caching to reduce memory usage
       });
+
+      console.log('✅ Model execution completed');
 
       // Extract the generated text
       let response = output[0].generated_text;
@@ -188,6 +170,19 @@ Companion:`;
 
     } catch (error) {
       console.error('LLM generation failed:', error);
+      console.error('Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack?.split('\n').slice(0, 3).join('\n')
+      });
+
+      // Specific handling for buffer overflow
+      if (error.message?.includes('offset is out of bounds') || error instanceof RangeError) {
+        console.error('❌ Buffer overflow detected. This model may be too large or unstable.');
+        console.error('💡 Consider switching to a different model or reducing max_new_tokens further.');
+        console.error('💡 Available models: Run llmService.getAvailableModels() to see options.');
+      }
+
       throw error;
     }
   }

@@ -1,21 +1,20 @@
 import { LitElement, html, css } from 'lit';
 import { logConversation, getRecentConversations } from '../services/db-service.js';
-import { llmService } from '../services/llm-service.js';
+import { conversationService } from '../services/conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
 
 /**
  * Companion Chat Component
- * Main conversational interface
- * Handles both rule-based and LLM responses
+ * Main conversational interface with intelligent rule-based responses
+ * Features: Intent recognition, synonym matching, i18n support, natural language generation
  */
 class CompanionChat extends LitElement {
   static properties = {
     profile: { type: Object },
     messages: { type: Array },
     processing: { type: Boolean },
-    llmLoading: { type: Boolean },
-    llmProgress: { type: Object },
-    llmReady: { type: Boolean }
+    ttsLoading: { type: Boolean },
+    ttsProgress: { type: Object }
   };
 
   static styles = css`
@@ -107,32 +106,32 @@ class CompanionChat extends LitElement {
       30% { opacity: 1; }
     }
 
-    .llm-loading {
-      background: var(--surface);
+    .tts-loading {
+      background: linear-gradient(135deg, var(--primary-light), var(--primary));
       border-radius: var(--radius);
-      padding: var(--spacing);
+      padding: calc(var(--spacing) * 1.5);
       margin-bottom: var(--spacing);
       text-align: center;
       box-shadow: var(--shadow);
+      color: white;
     }
 
-    .llm-loading-title {
-      font-size: 1.125rem;
+    .tts-loading-title {
+      font-size: 1.25rem;
       font-weight: 600;
       margin-bottom: 0.5rem;
-      color: var(--text);
     }
 
-    .llm-loading-subtitle {
+    .tts-loading-subtitle {
       font-size: 0.875rem;
-      color: var(--text-light);
+      opacity: 0.9;
       margin-bottom: var(--spacing);
     }
 
     .progress-bar {
       width: 100%;
       height: 8px;
-      background: var(--bg);
+      background: rgba(255, 255, 255, 0.3);
       border-radius: 4px;
       overflow: hidden;
       margin-bottom: 0.5rem;
@@ -140,7 +139,7 @@ class CompanionChat extends LitElement {
 
     .progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, var(--primary), var(--primary-light));
+      background: white;
       transition: width 0.3s ease;
       animation: shimmer 2s infinite;
     }
@@ -153,7 +152,7 @@ class CompanionChat extends LitElement {
 
     .progress-text {
       font-size: 0.75rem;
-      color: var(--text-light);
+      opacity: 0.9;
     }
   `;
 
@@ -162,10 +161,9 @@ class CompanionChat extends LitElement {
     this.profile = null;
     this.messages = [];
     this.processing = false;
-    this.llmLoading = false;
-    this.llmProgress = { status: '', file: '', progress: 0, loaded: 0, total: 0 };
-    this.llmReady = false;
     this.ttsReady = false;
+    this.ttsLoading = false;
+    this.ttsProgress = { status: '', progress: 0, loaded: 0, total: 0 };
   }
 
   async connectedCallback() {
@@ -184,51 +182,30 @@ class CompanionChat extends LitElement {
     // Initialize TTS service
     await this.initializeTTS();
 
-    // Initialize LLM in background
-    this.initializeLLM();
-
     // Send welcome message if first time
     if (this.messages.length === 0 && this.profile) {
-      this.addCompanionMessage(`Hello ${this.profile.name}! How can I help you today?`);
+      const greeting = await conversationService.generateResponse('hello', this.profile);
+      this.addCompanionMessage(greeting);
     }
   }
 
   async initializeTTS() {
-    try {
-      await ttsService.initialize('browser');
-      this.ttsReady = true;
-      const currentVoice = ttsService.getCurrentVoice();
-      console.log('🔊 TTS initialized with voice:', currentVoice);
-    } catch (error) {
-      console.error('Failed to initialize TTS:', error);
-      this.ttsReady = false;
-    }
-  }
-
-  async initializeLLM() {
-    // Check if already initialized
-    if (llmService.isReady()) {
-      this.llmReady = true;
-      return;
-    }
-
-    this.llmLoading = true;
+    this.ttsLoading = true;
 
     try {
-      await llmService.initialize((progress) => {
-        // Update progress
-        this.llmProgress = progress || { status: 'loading', progress: 0 };
+      await ttsService.initialize('kokoro', null, (progress) => {
+        this.ttsProgress = progress || { status: 'loading', progress: 0 };
         this.requestUpdate();
       });
 
-      this.llmReady = true;
-      console.log('LLM ready for conversations');
+      this.ttsReady = true;
+      const currentVoice = ttsService.getCurrentVoice();
+      console.log('🔊 TTS initialized with Kokoro voice:', currentVoice);
     } catch (error) {
-      console.error('Failed to initialize LLM:', error);
-      this.llmReady = false;
-      // Still allow rule-based responses
+      console.error('Failed to initialize Kokoro TTS:', error);
+      this.ttsReady = false;
     } finally {
-      this.llmLoading = false;
+      this.ttsLoading = false;
     }
   }
 
@@ -288,19 +265,10 @@ class CompanionChat extends LitElement {
     this.processing = true;
 
     try {
-      // Check for rule-based patterns first
-      const ruleResponse = this.checkRuleBasedResponse(input);
-
-      if (ruleResponse) {
-        this.addCompanionMessage(ruleResponse);
-        await logConversation(input, ruleResponse, 'rule-based');
-      } else {
-        // Fall back to conversational response
-        // TODO: Integrate Transformers.js LLM
-        const response = await this.generateResponse(input);
-        this.addCompanionMessage(response);
-        await logConversation(input, response, 'llm');
-      }
+      // Use conversation service for intelligent rule-based responses
+      const response = await conversationService.generateResponse(input, this.profile);
+      this.addCompanionMessage(response);
+      await logConversation(input, response, 'rule-based');
     } catch (error) {
       console.error('Failed to process input:', error);
       this.addCompanionMessage("I'm sorry, I didn't quite catch that. Could you try again?");
@@ -309,86 +277,6 @@ class CompanionChat extends LitElement {
     }
   }
 
-  checkRuleBasedResponse(input) {
-    const lowerInput = input.toLowerCase();
-
-    // Medication queries
-    if (lowerInput.includes('medication') || lowerInput.includes('medicine') || lowerInput.includes('pills')) {
-      const meds = this.profile?.medications || [];
-      if (meds.length === 0) {
-        return "You don't have any medications scheduled right now.";
-      }
-
-      const medList = meds.map(m => `${m.name} - ${m.dosage} at ${m.time}`).join(', ');
-      return `Your medications are: ${medList}`;
-    }
-
-    // Family queries
-    if (lowerInput.includes('family') || lowerInput.includes('daughter') || lowerInput.includes('son')) {
-      const family = this.profile?.family || [];
-      if (family.length === 0) {
-        return "I don't have family information stored yet.";
-      }
-
-      const familyList = family.map(f => `${f.name} (${f.relation})`).join(', ');
-      return `Your family: ${familyList}`;
-    }
-
-    // Doctor queries
-    if (lowerInput.includes('doctor') || lowerInput.includes('appointment')) {
-      const doctors = this.profile?.doctors || [];
-      if (doctors.length === 0) {
-        return "I don't have doctor information stored yet.";
-      }
-
-      const doctorInfo = doctors.map(d => `${d.name} - ${d.specialty}: ${d.phone}`).join('. ');
-      return `Your doctors: ${doctorInfo}`;
-    }
-
-    // Hydration reminder
-    if (lowerInput.includes('water') || lowerInput.includes('drink') || lowerInput.includes('hydrat')) {
-      return "It's important to stay hydrated! Would you like me to remind you to drink water regularly?";
-    }
-
-    // No rule matched
-    return null;
-  }
-
-  async generateResponse(input) {
-    // Use LLM if ready, otherwise fall back to simple responses
-    console.log('🤖 generateResponse called. llmReady:', this.llmReady, 'llmService.isReady():', llmService.isReady());
-
-    if (this.llmReady && llmService.isReady()) {
-      try {
-        console.log('🧠 Using LLM to generate response...');
-        // Get recent conversation history for context
-        const recentMessages = this.messages.slice(-6); // Last 3 exchanges
-
-        const response = await llmService.generate(
-          input,
-          this.profile,
-          recentMessages
-        );
-
-        console.log('✅ LLM response:', response);
-        return response;
-      } catch (error) {
-        console.error('❌ LLM generation error:', error);
-        // Fall through to fallback
-      }
-    } else {
-      console.warn('⚠️  LLM not ready, using fallback responses');
-    }
-
-    // Fallback responses if LLM not ready or failed
-    const responses = [
-      `I understand you said "${input}". How can I help you with that?`,
-      "I'm here to help! Could you tell me more?",
-      `That's interesting. I'm learning more about you every day, ${this.profile?.name}.`
-    ];
-
-    return responses[Math.floor(Math.random() * responses.length)];
-  }
 
   async speak(text) {
     if (!this.ttsReady) {
@@ -415,25 +303,25 @@ class CompanionChat extends LitElement {
   }
 
   render() {
-    // Show LLM loading progress
-    if (this.llmLoading) {
-      const progress = this.llmProgress.progress || 0;
-      const progressPercent = this.llmProgress.percentage || Math.round(progress * 100);
-      const loaded = this.llmProgress.loaded || '0 B';
-      const total = this.llmProgress.total || '600 MB';
+    // Show TTS loading progress
+    if (this.ttsLoading) {
+      const progress = this.ttsProgress.progress || 0;
+      const progressPercent = Math.round(progress * 100);
+      const device = this.ttsProgress.device || 'wasm';
+      const deviceIcon = device === 'webgpu' ? '🚀' : '⚡';
+      const deviceLabel = device === 'webgpu' ? 'GPU Accelerated' : 'WASM';
 
       return html`
-        <div class="llm-loading">
-          <div class="llm-loading-title">🧠 Preparing your companion...</div>
-          <div class="llm-loading-subtitle">
-            Downloading AI model (one-time download, ~600MB)
+        <div class="tts-loading">
+          <div class="tts-loading-title">🎤 Loading Premium Voice...</div>
+          <div class="tts-loading-subtitle">
+            ${deviceIcon} ${deviceLabel} - Preparing Kokoro TTS
           </div>
           <div class="progress-bar">
             <div class="progress-fill" style="width: ${progressPercent}%"></div>
           </div>
           <div class="progress-text">
-            ${progressPercent}% - ${loaded} / ${total}
-            ${this.llmProgress.file ? html`<br><small>${this.llmProgress.file}</small>` : ''}
+            ${progressPercent}% - ${this.ttsProgress.status || 'Initializing'}
           </div>
         </div>
       `;
@@ -444,11 +332,9 @@ class CompanionChat extends LitElement {
         <div class="chat-container">
           <div class="welcome">
             <p>👋 Welcome! Tap the microphone below to start talking.</p>
-            ${!this.llmReady ? html`
-              <p style="color: var(--text-light); font-size: 0.875rem; margin-top: 1rem;">
-                AI companion is loading in the background...
-              </p>
-            ` : ''}
+            <p style="color: var(--text-light); font-size: 0.875rem; margin-top: 1rem;">
+              🎤 Using premium Kokoro voice for natural speech
+            </p>
           </div>
         </div>
       `;
