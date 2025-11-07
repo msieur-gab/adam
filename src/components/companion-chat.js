@@ -299,8 +299,10 @@ class CompanionChat extends LitElement {
 
 
   async speak(text) {
+    console.log('🔊 Companion requesting speech:', text.substring(0, 50) + '...');
+
     if (!this.ttsReady) {
-      console.warn('TTS not ready');
+      console.warn('⚠️  TTS not ready, cannot speak');
       return;
     }
 
@@ -310,10 +312,11 @@ class CompanionChat extends LitElement {
         pitch: 1.0,
         volume: 1.0
       });
+      console.log('✅ Speech request completed');
     } catch (error) {
       // "interrupted" is normal when new speech starts
       if (error !== 'interrupted') {
-        console.error('Speech failed:', error);
+        console.error('❌ Speech failed:', error);
       }
     }
   }

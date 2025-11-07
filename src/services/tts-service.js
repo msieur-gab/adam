@@ -546,7 +546,7 @@ class TTSService {
   /**
    * Speak using browser's Web Speech API
    */
-  speakBrowser(text, { rate, pitch, volume }) {
+  speakBrowser(text, { rate = 0.9, pitch = 1.0, volume = 1.0 }) {
     return new Promise((resolve, reject) => {
       // Cancel any ongoing speech
       speechSynthesis.cancel();
@@ -558,20 +558,33 @@ class TTSService {
 
       if (this.selectedVoice) {
         utterance.voice = this.selectedVoice;
+        console.log('🎤 Using voice:', this.selectedVoice.name);
+      } else {
+        console.warn('⚠️  No voice selected, using browser default');
       }
 
+      console.log('🔊 Speaking with:', { rate, pitch, volume, text: text.substring(0, 50) });
+
       utterance.onend = () => {
-        console.log('Speech completed');
+        console.log('✅ Speech completed');
         resolve();
       };
 
       utterance.onerror = (event) => {
-        console.error('Speech error:', event.error);
+        console.error('❌ Speech error:', event.error);
         reject(event.error);
       };
 
       utterance.onstart = () => {
-        console.log('Speaking:', text.substring(0, 50) + '...');
+        console.log('▶️  Speech started');
+      };
+
+      utterance.onpause = () => {
+        console.log('⏸️  Speech paused');
+      };
+
+      utterance.onresume = () => {
+        console.log('▶️  Speech resumed');
       };
 
       speechSynthesis.speak(utterance);
