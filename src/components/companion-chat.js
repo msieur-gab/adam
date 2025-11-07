@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { logConversation, getRecentConversations } from '../services/db-service.js';
+import { logConversation, getRecentConversations, getProfile } from '../services/db-service.js';
 import { conversationService } from '../services/conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
 
@@ -200,7 +200,7 @@ class CompanionChat extends LitElement {
 
     try {
       // Use Piper for high-quality, fast speech
-      await ttsService.initialize('piper', null, (progress) => {
+      await ttsService.initialize('piper', (progress) => {
         this.ttsProgress = progress || { status: 'loading', progress: 0 };
         this.requestUpdate();
       });
@@ -300,6 +300,13 @@ class CompanionChat extends LitElement {
       const response = await conversationService.generateResponse(input, this.profile);
       this.addCompanionMessage(response);
       await logConversation(input, response, 'rule-based');
+
+      // Reload profile in case it was updated (e.g., location was saved)
+      const updatedProfile = await getProfile();
+      if (updatedProfile) {
+        this.profile = updatedProfile;
+        console.log('🔄 Profile reloaded after conversation');
+      }
     } catch (error) {
       console.error('Failed to process input:', error);
       this.addCompanionMessage("I'm sorry, I didn't quite catch that. Could you try again?");
@@ -346,9 +353,9 @@ class CompanionChat extends LitElement {
 
       return html`
         <div class="tts-loading">
-          <div class="tts-loading-title">🎤 Loading Premium Voice...</div>
+          <div class="tts-loading-title">🎤 Loading Voice Model...</div>
           <div class="tts-loading-subtitle">
-            ${deviceIcon} ${deviceLabel} - Preparing Kokoro TTS
+            ${deviceIcon} ${deviceLabel} - Preparing Piper TTS
           </div>
           <div class="progress-bar">
             <div class="progress-fill" style="width: ${progressPercent}%"></div>
@@ -366,7 +373,7 @@ class CompanionChat extends LitElement {
           <div class="welcome">
             <p>👋 Welcome! Tap the microphone below to start talking.</p>
             <p style="color: var(--text-light); font-size: 0.875rem; margin-top: 1rem;">
-              🎤 Using premium Kokoro voice for natural speech
+              🎤 Using high-quality Piper voice for natural speech
             </p>
           </div>
         </div>

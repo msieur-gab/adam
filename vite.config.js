@@ -25,7 +25,6 @@ export default defineConfig({
           'lit': ['lit'],
           'dexie': ['dexie'],
           'transformers': ['@xenova/transformers'],
-          'kokoro': ['kokoro-js'],
           'piper': ['piper-tts-web']
         }
       }
@@ -38,6 +37,6 @@ export default defineConfig({
   },
 
   optimizeDeps: {
-    include: ['lit', 'dexie', 'kokoro-js', 'piper-tts-web']
+    include: ['lit', 'dexie', 'piper-tts-web']
   }
 });

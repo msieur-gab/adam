@@ -1,16 +1,14 @@
-import { KokoroTTS } from 'kokoro-js';
 import { PiperWebEngine, OnnxWebGPURuntime, PiperWebWorkerEngine, OnnxWebGPUWorkerRuntime, HuggingFaceVoiceProvider } from 'piper-tts-web';
 
 /**
  * TTS Service for ADAM
- * Supports multiple TTS backends: Piper, Kokoro, Browser TTS
+ * Supports multiple TTS backends: Piper (primary), Browser TTS (fallback)
  */
 
 class TTSService {
   constructor() {
-    this.provider = 'piper'; // 'piper', 'kokoro', 'browser', 'elevenlabs'
+    this.provider = 'piper'; // 'piper' or 'browser'
     this.selectedVoice = null;
-    this.apiKey = null;
     this.voicesLoaded = false;
 
     // Piper-specific properties
@@ -21,29 +19,15 @@ class TTSService {
     this.piperVoiceProvider = null;
     this.piperAvailableVoices = [];
 
-    // Kokoro-specific properties
-    this.kokoroModel = null;
-    this.kokoroLoading = false;
-    this.kokoroReady = false;
-    this.kokoroVoice = 'af_aoede'; // AOede - performs well, no scrambling
-
-    // Web Audio API for playback
-    this.audioContext = null;
-    this.currentSource = null; // Track current playing source for stop functionality
-
-    // Audio cache for common responses
-    this.audioCache = new Map();
-    this.maxCacheSize = 20; // Cache up to 20 common responses
-    this.cacheMemoryLimit = 50 * 1024 * 1024; // 50MB limit for audio cache
-    this.currentCacheSize = 0; // Track memory usage
+    // Playback control
+    this.currentAudio = null; // Track current HTML Audio element for Piper
   }
 
   /**
    * Initialize TTS with best available provider
    */
-  async initialize(provider = 'piper', apiKey = null, onProgress = null) {
+  async initialize(provider = 'piper', onProgress = null) {
     this.provider = provider;
-    this.apiKey = apiKey;
 
     switch (provider) {
       case 'piper':
@@ -55,24 +39,11 @@ class TTSService {
           await this.initializeBrowserTTS();
         }
         break;
-      case 'kokoro':
-        try {
-          await this.initializeKokoro(onProgress);
-        } catch (error) {
-          console.error('Failed to initialize Kokoro, falling back to browser TTS:', error);
-          this.provider = 'browser';
-          await this.initializeBrowserTTS();
-        }
-        break;
       case 'browser':
         await this.initializeBrowserTTS();
         break;
-      case 'elevenlabs':
-        // Future: ElevenLabs integration
-        console.log('ElevenLabs TTS not yet implemented');
-        await this.initializeBrowserTTS(); // Fallback
-        break;
       default:
+        // Default to Piper, fallback to browser TTS
         await this.initializePiper(onProgress).catch(() => this.initializeBrowserTTS());
     }
   }
@@ -99,9 +70,18 @@ class TTSService {
       console.log('🎤 Loading Piper TTS engine...');
       this.logDeviceInfo();
 
+      // Report initial progress
+      if (onProgress) {
+        onProgress({ status: 'Detecting device capabilities', progress: 0.1, device: 'detecting' });
+      }
+
       // Detect best device
       const device = await this.detectBestDevice();
       console.log('🚀 Initializing Piper with device:', device);
+
+      if (onProgress) {
+        onProgress({ status: 'Initializing engine', progress: 0.2, device });
+      }
 
       // Initialize with WebGPU if available, otherwise WASM
       if (device === 'webgpu') {
@@ -115,28 +95,53 @@ class TTSService {
       // Initialize voice provider
       this.piperVoiceProvider = new HuggingFaceVoiceProvider();
 
+      if (onProgress) {
+        onProgress({ status: 'Loading voice catalog', progress: 0.3, device });
+      }
+
       // Load available voices (optional, for voice selection later)
       try {
         console.log('📥 Loading available Piper voices...');
-        this.piperAvailableVoices = await this.piperVoiceProvider.voices();
-        console.log(`✅ Loaded ${this.piperAvailableVoices.length} voices`);
+        this.piperAvailableVoices = await this.piperVoiceProvider.list();
+        console.log(`✅ Loaded ${Object.keys(this.piperAvailableVoices).length} voices`);
       } catch (voiceError) {
         console.warn('Could not load voice list, using default voice:', voiceError);
       }
 
-      // Test audio generation
+      if (onProgress) {
+        onProgress({ status: `Downloading voice model (${this.piperVoice})`, progress: 0.5, device });
+      }
+
+      // Test audio generation (this will fetch the voice model automatically)
       console.log('🧪 Testing Piper audio generation...');
+      console.log(`📥 Fetching voice model: ${this.piperVoice} (this may take 10-30 seconds)...`);
       const testResult = await this.piperEngine.generate('Hello', this.piperVoice, 0);
 
-      if (testResult && testResult.audio) {
+      if (onProgress) {
+        onProgress({ status: 'Validating audio output', progress: 0.9, device });
+      }
+
+      console.log('📦 Piper test response:', {
+        hasFile: !!testResult?.file,
+        hasPhonemeData: !!testResult?.phonemeData,
+        fileType: testResult?.file?.type,
+        fileSize: testResult?.file?.size
+      });
+
+      if (testResult && testResult.file) {
         console.log('✅ Piper audio test successful');
         this.piperReady = true;
         this.piperLoading = false;
         this.piperDevice = device;
+
+        if (onProgress) {
+          onProgress({ status: 'Ready!', progress: 1.0, device });
+        }
+
         console.log(`🎉 Piper TTS initialized successfully with ${device}`);
         return true;
       } else {
-        throw new Error('Piper test audio generation failed');
+        throw new Error('Piper test audio generation failed - no audio file returned');
       }
 
     } catch (error) {
@@ -148,145 +153,7 @@ class TTSService {
   }
 
   /**
-   * Initialize Kokoro TTS model with smart GPU detection and automatic fallback
-   */
-  async initializeKokoro(onProgress = null) {
-    if (this.kokoroReady) {
-      return true;
-    }
-
-    if (this.kokoroLoading) {
-      // Wait for existing initialization
-      while (this.kokoroLoading) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      return this.kokoroReady;
-    }
-
-    this.kokoroLoading = true;
-
-    try {
-      console.log('🎤 Loading Kokoro TTS model...');
-      this.logDeviceInfo(); // Log device capabilities
-
-      const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
-
-      // Smart device detection: Try WebGPU first, fall back to WASM if needed
-      let device = await this.detectBestDevice();
-      let dtype = device === 'webgpu' ? 'fp32' : 'q8';
-
-      console.log('🚀 Attempting initialization with device:', device, 'dtype:', dtype);
-
-      // Try loading with detected device
-      let loadSuccess = false;
-      let webgpuFailed = false;
-
-      try {
-        this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
-          dtype: dtype,
-          device: device,
-          progress_callback: (progress) => {
-            if (onProgress) {
-              onProgress({
-                status: progress.status,
-                progress: progress.progress || 0,
-                loaded: progress.loaded || 0,
-                total: progress.total || 0,
-                file: progress.file || '',
-                device: device // Show which device we're using
-              });
-            }
-          }
-        });
-
-        // Test audio generation with validation
-        console.log('🧪 Testing audio generation and validation...');
-        const testAudio = await this.kokoroModel.generate('Hello, this is a test.', {
-          voice: this.kokoroVoice,
-          speed: 1.0
-        });
-
-        // Validate audio data
-        const isValid = this.validateAudioData(testAudio);
-
-        if (!isValid && device === 'webgpu') {
-          webgpuFailed = true;
-          console.error('❌ WebGPU produced invalid/silent audio - this is a known Chrome bug on Android');
-          console.log('🔄 Falling back to WASM for reliability...');
-        } else {
-          loadSuccess = true;
-          console.log('✅ Audio validation passed!');
-        }
-
-      } catch (deviceError) {
-        console.error(`Failed to load with ${device}:`, deviceError);
-        if (device === 'webgpu') {
-          webgpuFailed = true;
-          console.log('🔄 Falling back to WASM...');
-        } else {
-          throw deviceError; // WASM failed, nothing to fall back to
-        }
-      }
-
-      // Fallback to WASM if WebGPU failed
-      if (webgpuFailed && !loadSuccess) {
-        device = 'wasm';
-        dtype = 'q8';
-
-        console.log('🔄 Reinitializing with WASM fallback...');
-
-        this.kokoroModel = await KokoroTTS.from_pretrained(model_id, {
-          dtype: dtype,
-          device: device,
-          progress_callback: (progress) => {
-            if (onProgress) {
-              onProgress({
-                status: progress.status + ' (WASM fallback)',
-                progress: progress.progress || 0,
-                loaded: progress.loaded || 0,
-                total: progress.total || 0,
-                file: progress.file || '',
-                device: device
-              });
-            }
-          }
-        });
-
-        // Validate WASM audio too
-        const testAudio = await this.kokoroModel.generate('Hello, this is a test.', {
-          voice: this.kokoroVoice,
-          speed: 1.0
-        });
-
-        const isValid = this.validateAudioData(testAudio);
-        if (!isValid) {
-          throw new Error('Both WebGPU and WASM produced invalid audio');
-        }
-
-        console.log('✅ WASM fallback successful with valid audio');
-      }
-
-      this.kokoroReady = true;
-      this.kokoroLoading = false;
-      this.kokoroDevice = device; // Store for debugging
-      this.kokoroDtype = dtype;
-
-      console.log(`✅ Kokoro TTS initialized successfully with ${device} (${dtype})`);
-      console.log(`⚡ Expected generation time: ${device === 'webgpu' ? '50-200ms' : '200-1000ms'} per sentence`);
-      console.log(`📱 Device: ${navigator.userAgent}`);
-
-      return true;
-
-    } catch (error) {
-      console.error('Failed to initialize Kokoro TTS:', error);
-      this.kokoroLoading = false;
-      this.kokoroReady = false;
-      throw error;
-    }
-  }
-
-  /**
-   * Detect the best available device for Kokoro
+   * Detect the best available device (WebGPU or WASM)
    * WebGPU is much faster (10-100x) than WASM
    */
   async detectBestDevice() {
@@ -305,57 +172,6 @@ class TTSService {
 
     console.log('⚠️  Using WASM (slower) - WebGPU not available');
     return 'wasm';
-  }
-
-  /**
-   * Validate audio data to detect silent/corrupted audio
-   * Returns true if audio appears valid, false otherwise
-   */
-  validateAudioData(audioData) {
-    if (!audioData || !audioData.audio || audioData.audio.length === 0) {
-      console.error('❌ Audio validation failed: No audio data');
-      return false;
-    }
-
-    const samples = audioData.audio;
-    const sampleRate = audioData.sampling_rate || 24000;
-
-    // Check a larger sample size for better accuracy
-    const checkSize = Math.min(1000, samples.length);
-    const sampleSlice = samples.slice(0, checkSize);
-
-    const minSample = Math.min(...sampleSlice);
-    const maxSample = Math.max(...sampleSlice);
-    const avgAbsSample = sampleSlice.reduce((a, b) => a + Math.abs(b), 0) / sampleSlice.length;
-
-    console.log('🔍 Audio validation stats:', {
-      samples: samples.length,
-      duration: (samples.length / sampleRate).toFixed(2) + 's',
-      minSample: minSample.toFixed(6),
-      maxSample: maxSample.toFixed(6),
-      avgAbsSample: avgAbsSample.toFixed(6)
-    });
-
-    // Check for silent audio (known WebGPU bug)
-    if (Math.abs(maxSample) < 0.001 && Math.abs(minSample) < 0.001) {
-      console.error('❌ Audio validation failed: Audio is silent (max/min < 0.001)');
-      return false;
-    }
-
-    // Check for reasonable average amplitude
-    if (avgAbsSample < 0.0001) {
-      console.error('❌ Audio validation failed: Average amplitude too low');
-      return false;
-    }
-
-    // Check for unnormalized data (too large)
-    if (Math.abs(maxSample) > 10 || Math.abs(minSample) > 10) {
-      console.warn('⚠️  Audio values seem unnormalized (very large)');
-      // Don't fail, just warn - might still be playable
-    }
-
-    console.log('✅ Audio validation passed - audio appears valid');
-    return true;
   }
 
   /**
@@ -511,18 +327,8 @@ class TTSService {
           console.warn('Piper not ready, falling back to browser TTS');
           return this.speakBrowser(text, { rate, pitch, volume });
         }
-      case 'kokoro':
-        if (this.kokoroReady) {
-          return this.speakKokoro(text, { voice, rate });
-        } else {
-          console.warn('Kokoro not ready, falling back to browser TTS');
-          return this.speakBrowser(text, { rate, pitch, volume });
-        }
       case 'browser':
         return this.speakBrowser(text, { rate, pitch, volume });
-      case 'elevenlabs':
-        // Future implementation
-        return this.speakBrowser(text, { rate, pitch, volume }); // Fallback
       default:
         return this.speakBrowser(text, { rate, pitch, volume });
     }
@@ -530,7 +336,7 @@ class TTSService {
 
   /**
    * Speak using Piper TTS
-   * Piper returns audio as Float32Array which we play using Web Audio API
+   * Piper returns audio as a Blob (WAV file) which we play using HTML Audio
    */
   async speakPiper(text, { voice = null, rate = 0.9 }) {
     try {
@@ -546,19 +352,17 @@ class TTSService {
       const genTime = performance.now() - genStart;
       console.log(`🔄 Generated Piper audio in ${genTime.toFixed(0)}ms`);
 
-      if (!result || !result.audio) {
-        throw new Error('Piper generated no audio data');
+      if (!result || !result.file) {
+        throw new Error('Piper generated no audio file');
       }
 
-      // Piper returns { audio: Float32Array, sampleRate: number, phonemes: [...] }
-      const audioData = {
-        audio: result.audio,
-        sampling_rate: result.sampleRate || 22050
-      };
+      // Piper returns { file: Blob, phonemeData: {...} }
+      const audioBlob = result.file;
+      console.log(`📦 Audio blob: ${audioBlob.type}, ${audioBlob.size} bytes`);
 
-      // Play using existing Web Audio API method
+      // Play the audio blob
       const playStart = performance.now();
-      await this.playKokoroAudio(audioData); // Reuse Kokoro playback (works with Float32Array)
+      await this.playAudioBlob(audioBlob);
       const playTime = performance.now() - playStart;
 
       const totalTime = performance.now() - startTime;
@@ -572,270 +376,35 @@ class TTSService {
   }
 
   /**
-   * Speak using Kokoro TTS with progressive sentence-level playback
-   * This plays sentences as they're generated for faster perceived response
+   * Play audio from a Blob using HTML Audio element
    */
-  async speakKokoro(text, { voice = null, rate = 0.9, progressive = true }) {
-    try {
-      const startTime = performance.now();
-      console.log('🎤 Generating speech with Kokoro:', text.substring(0, 50) + '...');
+  async playAudioBlob(blob) {
+    return new Promise((resolve, reject) => {
+      const audio = new Audio();
+      const url = URL.createObjectURL(blob);
 
-      // Use provided voice or default
-      const selectedVoice = voice || this.kokoroVoice;
+      audio.src = url;
+      audio.autoplay = true;
 
-      // Progressive mode: split into sentences and play as we generate
-      if (progressive && text.length > 100) {
-        return await this.speakKokoroProgressive(text, { voice: selectedVoice, rate });
-      }
+      // Track current audio for stop functionality
+      this.currentAudio = audio;
 
-      // Standard mode: generate and cache full text
-      const cacheKey = `${selectedVoice}:${rate}:${text}`;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        this.currentAudio = null;
+        console.log('✅ Audio playback completed');
+        resolve();
+      };
 
-      // Check cache first
-      let audioData = this.audioCache.get(cacheKey);
-      let genTime = 0;
-
-      if (audioData) {
-        const cacheTime = performance.now() - startTime;
-        console.log(`⚡ Using cached audio (${cacheTime.toFixed(0)}ms)`);
-      } else {
-        // Generate audio data
-        const genStart = performance.now();
-        audioData = await this.kokoroModel.generate(text, {
-          voice: selectedVoice,
-          speed: rate // Speed control (0.5 to 2.0)
-        });
-        genTime = performance.now() - genStart;
-        console.log(`🔄 Generated audio in ${genTime.toFixed(0)}ms`);
-
-        // Cache for future use
-        this.cacheAudio(cacheKey, audioData);
-      }
-
-      // Play using Web Audio API
-      const playStart = performance.now();
-      await this.playKokoroAudio(audioData);
-      const playTime = performance.now() - playStart;
-
-      const totalTime = performance.now() - startTime;
-      console.log(`✅ Total TTS time: ${totalTime.toFixed(0)}ms (gen: ${audioData.cached ? 'cached' : genTime.toFixed(0) + 'ms'}, play: ${playTime.toFixed(0)}ms)`);
-
-    } catch (error) {
-      console.error('Failed to generate Kokoro speech:', error);
-      // Fallback to browser TTS
-      console.log('Falling back to browser TTS');
-      return this.speakBrowser(text, { rate: 0.9, pitch: 1.0, volume: 1.0 });
-    }
-  }
-
-  /**
-   * Progressive sentence-level playback
-   * Splits text into sentences and plays them as they're generated
-   * This dramatically improves perceived performance
-   */
-  async speakKokoroProgressive(text, { voice, rate }) {
-    const startTime = performance.now();
-    const sentences = this.splitIntoSentences(text);
-
-    console.log(`🚀 Progressive playback: ${sentences.length} sentences`);
-
-    for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i].trim();
-      if (!sentence) continue;
-
-      const sentenceStart = performance.now();
-
-      // Check cache for this sentence
-      const cacheKey = `${voice}:${rate}:${sentence}`;
-      let audioData = this.audioCache.get(cacheKey);
-
-      if (!audioData) {
-        // Generate audio for this sentence
-        audioData = await this.kokoroModel.generate(sentence, {
-          voice: voice,
-          speed: rate
-        });
-
-        const genTime = performance.now() - sentenceStart;
-        console.log(`📝 Sentence ${i + 1}/${sentences.length}: ${genTime.toFixed(0)}ms - "${sentence.substring(0, 40)}..."`);
-
-        // Cache this sentence
-        this.cacheAudio(cacheKey, audioData);
-      } else {
-        console.log(`⚡ Cached sentence ${i + 1}/${sentences.length}`);
-      }
-
-      // Play immediately
-      await this.playKokoroAudio(audioData);
-    }
-
-    const totalTime = performance.now() - startTime;
-    console.log(`✅ Progressive playback complete: ${totalTime.toFixed(0)}ms total`);
-  }
-
-  /**
-   * Split text into sentences for progressive playback
-   */
-  splitIntoSentences(text) {
-    // Split on sentence boundaries (. ! ?) followed by space or end
-    // Keep the punctuation with the sentence
-    return text
-      .replace(/([.!?])\s+/g, '$1|')  // Replace sentence boundaries with delimiter
-      .split('|')                      // Split on delimiter
-      .map(s => s.trim())              // Trim whitespace
-      .filter(s => s.length > 0);      // Remove empty strings
-  }
-
-  /**
-   * Cache audio for faster playback with memory management
-   */
-  cacheAudio(key, audioData) {
-    // Calculate size of this audio sample (Float32Array bytes)
-    const audioSize = audioData.audio.length * 4; // 4 bytes per float32
-
-    // Check memory limit
-    if (this.currentCacheSize + audioSize > this.cacheMemoryLimit) {
-      console.log('⚠️  Cache memory limit reached, clearing oldest entries');
-      this.clearOldestCacheEntries(audioSize);
-    }
-
-    // Implement LRU cache - remove oldest if at count capacity
-    if (this.audioCache.size >= this.maxCacheSize) {
-      const firstKey = this.audioCache.keys().next().value;
-      const firstData = this.audioCache.get(firstKey);
-      const firstSize = firstData.audio.length * 4;
-      this.audioCache.delete(firstKey);
-      this.currentCacheSize -= firstSize;
-    }
-
-    // Mark as cached for logging
-    audioData.cached = true;
-    audioData.cacheSize = audioSize;
-    this.audioCache.set(key, audioData);
-    this.currentCacheSize += audioSize;
-
-    const sizeMB = (this.currentCacheSize / (1024 * 1024)).toFixed(2);
-    console.log(`💾 Cached audio (${this.audioCache.size}/${this.maxCacheSize}, ${sizeMB}MB)`);
-  }
-
-  /**
-   * Clear oldest cache entries to free memory
-   */
-  clearOldestCacheEntries(neededSpace) {
-    let freedSpace = 0;
-    const entries = Array.from(this.audioCache.entries());
-
-    for (const [key, data] of entries) {
-      if (freedSpace >= neededSpace) break;
-
-      const size = data.cacheSize || (data.audio.length * 4);
-      this.audioCache.delete(key);
-      this.currentCacheSize -= size;
-      freedSpace += size;
-    }
-
-    console.log(`🗑️  Freed ${(freedSpace / (1024 * 1024)).toFixed(2)}MB from cache`);
-  }
-
-  /**
-   * Clear all cached audio
-   */
-  clearCache() {
-    this.audioCache.clear();
-    this.currentCacheSize = 0;
-    console.log('🗑️  Audio cache cleared');
-  }
-
-  /**
-   * Play Kokoro audio data using Web Audio API
-   */
-  async playKokoroAudio(audioData) {
-    return new Promise(async (resolve, reject) => {
-      try {
-        // Create audio context if needed
-        if (!this.audioContext) {
-          this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
-
-        // Debug: Log audio data structure
-        console.log('🔍 Audio data structure:', {
-          hasAudio: !!audioData.audio,
-          audioType: audioData.audio?.constructor?.name,
-          audioLength: audioData.audio?.length,
-          samplingRate: audioData.sampling_rate,
-          keys: Object.keys(audioData)
-        });
-
-        // Get audio samples from Kokoro output
-        const samples = audioData.audio; // Float32Array of audio samples
-        const sampleRate = audioData.sampling_rate || 24000; // Kokoro default sample rate
-
-        // Check sample values for issues
-        const sampleSlice = samples.slice(0, 100);
-        const minSample = Math.min(...sampleSlice);
-        const maxSample = Math.max(...sampleSlice);
-        const avgSample = sampleSlice.reduce((a, b) => a + Math.abs(b), 0) / sampleSlice.length;
-
-        console.log('🎵 Audio details:', {
-          sampleRate,
-          samplesLength: samples?.length,
-          duration: (samples?.length / sampleRate).toFixed(2) + 's',
-          minSample: minSample.toFixed(4),
-          maxSample: maxSample.toFixed(4),
-          avgAbsSample: avgSample.toFixed(4),
-          firstFewSamples: Array.from(samples.slice(0, 10)).map(s => s.toFixed(4))
-        });
-
-        // Check if audio seems valid
-        if (Math.abs(maxSample) < 0.001 && Math.abs(minSample) < 0.001) {
-          console.warn('⚠️  Audio appears to be silent or nearly silent');
-        }
-        if (Math.abs(maxSample) > 10 || Math.abs(minSample) > 10) {
-          console.warn('⚠️  Audio values seem unnormalized (too large)');
-        }
-
-        if (!samples || samples.length === 0) {
-          throw new Error('No audio samples in Kokoro output');
-        }
-
-        // Create audio buffer
-        const audioBuffer = this.audioContext.createBuffer(
-          1, // mono
-          samples.length,
-          sampleRate
-        );
-
-        // Copy samples to buffer
-        audioBuffer.getChannelData(0).set(samples);
-
-        // Create buffer source
-        const source = this.audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(this.audioContext.destination);
-
-        // Track current source for stop functionality
-        this.currentSource = source;
-
-        // Resume context if suspended (browser autoplay policy)
-        if (this.audioContext.state === 'suspended') {
-          await this.audioContext.resume();
-        }
-
-        // Handle playback completion
-        source.onended = () => {
-          console.log('✅ Kokoro speech completed');
-          this.currentSource = null;
-          resolve();
-        };
-
-        // Start playback
-        source.start(0);
-        console.log('🔊 Playing Kokoro audio...');
-
-      } catch (error) {
-        console.error('❌ Failed to play Kokoro audio:', error);
+      audio.onerror = (error) => {
+        URL.revokeObjectURL(url);
+        this.currentAudio = null;
+        console.error('❌ Audio playback error:', error);
         reject(error);
-      }
+      };
+
+      // Start playback
+      audio.play().catch(reject);
     });
   }
 
@@ -873,56 +442,15 @@ class TTSService {
   stop() {
     if (this.provider === 'browser') {
       speechSynthesis.cancel();
-    } else if ((this.provider === 'piper' || this.provider === 'kokoro') && this.currentSource) {
+    } else if (this.provider === 'piper' && this.currentAudio) {
       try {
-        this.currentSource.stop();
-        this.currentSource = null;
-        console.log('🛑 Audio playback stopped');
+        this.currentAudio.pause();
+        this.currentAudio = null;
+        console.log('🛑 Piper audio playback stopped');
       } catch (error) {
-        // Source might already be stopped
-        console.log('Audio source already stopped');
+        console.log('Audio element already stopped');
       }
     }
-  }
-
-  /**
-   * Get available Kokoro voices
-   * Based on testing and community feedback
-   */
-  getKokoroVoices() {
-    return [
-      // American English Female (recommended)
-      { id: 'af_aoede', name: 'Aoede', description: '⭐ High quality, no scrambling (recommended)', quality: 'excellent' },
-      { id: 'af_bella', name: 'Bella', description: 'Warm, friendly voice', quality: 'good' },
-      { id: 'af_sarah', name: 'Sarah', description: 'Clear, articulate voice', quality: 'good' },
-      { id: 'af_sky', name: 'Sky', description: 'Bright, energetic voice', quality: 'good' },
-
-      // American English Male
-      { id: 'am_adam', name: 'Adam', description: 'Professional male voice', quality: 'good' },
-      { id: 'am_michael', name: 'Michael', description: 'Deep, reassuring male voice', quality: 'good' },
-
-      // British English Female
-      { id: 'bf_emma', name: 'Emma', description: 'Bright British accent', quality: 'good' },
-      { id: 'bf_isabella', name: 'Isabella', description: 'Elegant British accent', quality: 'good' },
-
-      // British English Male
-      { id: 'bm_george', name: 'George', description: 'Calm British accent', quality: 'good' },
-      { id: 'bm_lewis', name: 'Lewis', description: 'Friendly British accent', quality: 'good' }
-    ];
-  }
-
-  /**
-   * Set Kokoro voice
-   */
-  setKokoroVoice(voiceId) {
-    const voices = this.getKokoroVoices();
-    const voice = voices.find(v => v.id === voiceId);
-    if (voice) {
-      this.kokoroVoice = voiceId;
-      console.log('Kokoro voice changed to:', voice.name);
-      return true;
-    }
-    return false;
   }
 
   /**
@@ -961,17 +489,6 @@ class TTSService {
       };
     }
 
-    if (this.provider === 'kokoro') {
-      const voices = this.getKokoroVoices();
-      const currentVoice = voices.find(v => v.id === this.kokoroVoice);
-      return currentVoice ? {
-        provider: 'kokoro',
-        name: currentVoice.name,
-        description: currentVoice.description,
-        id: currentVoice.id
-      } : null;
-    }
-
     return this.selectedVoice ? {
       provider: 'browser',
       name: this.selectedVoice.name,
@@ -987,9 +504,6 @@ class TTSService {
     if (this.provider === 'piper') {
       return this.piperReady;
     }
-    if (this.provider === 'kokoro') {
-      return this.kokoroReady;
-    }
     return this.voicesLoaded;
   }
 
@@ -1000,7 +514,7 @@ class TTSService {
     return {
       provider: this.provider,
       ready: this.isReady(),
-      loading: this.piperLoading || this.kokoroLoading,
+      loading: this.piperLoading,
       voice: this.getCurrentVoice()
     };
   }
@@ -1051,28 +565,89 @@ if (typeof window !== 'undefined') {
   window.ttsService = ttsService;
   window.checkMemory = () => ttsService.logMemoryStats();
 
-  // Helper to test different voices
-  window.testVoice = async (voiceId, text = "Hello, this is a test of the Kokoro voice.") => {
-    const voices = ttsService.getKokoroVoices();
-    const voice = voices.find(v => v.id === voiceId);
+  // Helper to list available Piper voices
+  window.listVoices = async () => {
+    if (!ttsService.piperAvailableVoices || ttsService.piperAvailableVoices.length === 0) {
+      console.log('⏳ Loading voices list...');
+      try {
+        ttsService.piperAvailableVoices = await ttsService.piperVoiceProvider.list();
+      } catch (error) {
+        console.error('❌ Failed to load voices:', error);
+        return;
+      }
+    }
 
+    console.log('🎤 Available Piper Voices:');
+    console.log('Format: voice_id (language, quality, speakers)');
+    console.log('');
+
+    const voices = ttsService.piperAvailableVoices;
+    Object.keys(voices).forEach(voiceId => {
+      const voice = voices[voiceId];
+      const current = voiceId === ttsService.piperVoice ? '⭐ ' : '   ';
+      console.log(`${current}${voiceId} (${voice.language?.name_english || 'unknown'}, ${voice.quality || 'unknown'}, ${voice.num_speakers} speaker(s))`);
+    });
+
+    console.log('');
+    console.log('To test a voice, use: testVoice("voice_id")');
+    console.log(`Current voice: ${ttsService.piperVoice}`);
+  };
+
+  // Helper to test a specific voice
+  window.testVoice = async (voiceId, text = "Hello, this is a test of the Piper voice.") => {
+    if (!ttsService.piperAvailableVoices || ttsService.piperAvailableVoices.length === 0) {
+      console.log('Loading voices first...');
+      await window.listVoices();
+    }
+
+    const voice = ttsService.piperAvailableVoices[voiceId];
     if (!voice) {
-      console.error('Voice not found. Available voices:');
-      voices.forEach(v => console.log(`  ${v.id} - ${v.name}: ${v.description}`));
+      console.error(`❌ Voice "${voiceId}" not found.`);
+      console.log('Run listVoices() to see available voices');
       return;
     }
 
-    console.log(`🎤 Testing voice: ${voice.name} (${voiceId})`);
-    ttsService.setKokoroVoice(voiceId);
-    await ttsService.speak(text);
+    console.log(`🎤 Testing voice: ${voiceId}`);
+    console.log(`   Language: ${voice.language?.name_english || 'unknown'}`);
+    console.log(`   Quality: ${voice.quality || 'unknown'}`);
+    console.log(`   Speakers: ${voice.num_speakers}`);
+
+    // Temporarily change voice
+    const originalVoice = ttsService.piperVoice;
+    ttsService.piperVoice = voiceId;
+
+    try {
+      await ttsService.speak(text);
+      console.log('✅ Test complete');
+    } catch (error) {
+      console.error('❌ Test failed:', error);
+      ttsService.piperVoice = originalVoice; // Restore on error
+    }
   };
 
-  // Helper to list all voices
-  window.listVoices = () => {
-    console.log('🎤 Available Kokoro Voices:');
-    ttsService.getKokoroVoices().forEach(v => {
-      const star = v.quality === 'excellent' ? '⭐' : '';
-      console.log(`${star} ${v.id.padEnd(15)} - ${v.name.padEnd(10)} - ${v.description}`);
-    });
+  // Helper to change voice permanently
+  window.setVoice = (voiceId) => {
+    if (!ttsService.piperAvailableVoices || ttsService.piperAvailableVoices.length === 0) {
+      console.error('❌ Run listVoices() first to see available voices');
+      return;
+    }
+
+    const voice = ttsService.piperAvailableVoices[voiceId];
+    if (!voice) {
+      console.error(`❌ Voice "${voiceId}" not found.`);
+      console.log('Run listVoices() to see available voices');
+      return;
+    }
+
+    ttsService.piperVoice = voiceId;
+    console.log(`✅ Voice changed to: ${voiceId}`);
+    console.log(`   Language: ${voice.language?.name_english || 'unknown'}`);
+    console.log(`   Quality: ${voice.quality || 'unknown'}`);
   };
+
+  console.log('🎤 Piper TTS Debug Commands:');
+  console.log('  listVoices()           - Show all available voices');
+  console.log('  testVoice("voice_id")  - Test a specific voice');
+  console.log('  setVoice("voice_id")   - Change current voice');
+  console.log('  checkMemory()          - Show memory usage');
 }

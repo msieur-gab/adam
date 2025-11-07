@@ -107,6 +107,16 @@ class AdamApp extends LitElement {
   async loadDemoProfile() {
     const demoProfile = {
       name: "Grandpa",
+
+      // Regional and format preferences
+      preferences: {
+        locale: "en-US",              // Language and region (en-US, en-GB, fr-FR, de-DE, etc.)
+        temperatureUnit: "celsius",   // "celsius" or "fahrenheit"
+        timeFormat: "24h",            // "12h" or "24h"
+        measurementSystem: "metric",  // "metric" or "imperial"
+        timezone: "Europe/Paris"
+      },
+
       family: [
         { name: "Maria", relation: "daughter", phone: "+1234567890" },
         { name: "Sofia", relation: "granddaughter" }
