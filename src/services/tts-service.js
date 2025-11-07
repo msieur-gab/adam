@@ -1,25 +1,16 @@
 import { KokoroTTS } from 'kokoro-js';
-import { PiperWebEngine, OnnxWebGPURuntime, PiperWebWorkerEngine, OnnxWebGPUWorkerRuntime, HuggingFaceVoiceProvider } from 'piper-tts-web';
 
 /**
  * TTS Service for ADAM
- * Supports multiple TTS backends: Piper, Kokoro, Browser TTS
+ * Supports multiple TTS backends: Browser TTS (primary), Kokoro (optional)
  */
 
 class TTSService {
   constructor() {
-    this.provider = 'piper'; // 'piper', 'kokoro', 'browser', 'elevenlabs'
+    this.provider = 'browser'; // 'browser', 'kokoro', 'elevenlabs'
     this.selectedVoice = null;
     this.apiKey = null;
     this.voicesLoaded = false;
-
-    // Piper-specific properties
-    this.piperEngine = null;
-    this.piperLoading = false;
-    this.piperReady = false;
-    this.piperVoice = 'en_US-libritts_r-medium'; // High quality English voice
-    this.piperVoiceProvider = null;
-    this.piperAvailableVoices = [];
 
     // Kokoro-specific properties
     this.kokoroModel = null;
@@ -41,20 +32,11 @@ class TTSService {
   /**
    * Initialize TTS with best available provider
    */
-  async initialize(provider = 'piper', apiKey = null, onProgress = null) {
+  async initialize(provider = 'browser', apiKey = null, onProgress = null) {
     this.provider = provider;
     this.apiKey = apiKey;
 
     switch (provider) {
-      case 'piper':
-        try {
-          await this.initializePiper(onProgress);
-        } catch (error) {
-          console.error('Failed to initialize Piper, falling back to browser TTS:', error);
-          this.provider = 'browser';
-          await this.initializeBrowserTTS();
-        }
-        break;
       case 'kokoro':
         try {
           await this.initializeKokoro(onProgress);
@@ -73,77 +55,7 @@ class TTSService {
         await this.initializeBrowserTTS(); // Fallback
         break;
       default:
-        await this.initializePiper(onProgress).catch(() => this.initializeBrowserTTS());
-    }
-  }
-
-  /**
-   * Initialize Piper TTS engine with smart GPU detection
-   */
-  async initializePiper(onProgress = null) {
-    if (this.piperReady) {
-      return true;
-    }
-
-    if (this.piperLoading) {
-      // Wait for existing initialization
-      while (this.piperLoading) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      return this.piperReady;
-    }
-
-    this.piperLoading = true;
-
-    try {
-      console.log('🎤 Loading Piper TTS engine...');
-      this.logDeviceInfo();
-
-      // Detect best device
-      const device = await this.detectBestDevice();
-      console.log('🚀 Initializing Piper with device:', device);
-
-      // Initialize with WebGPU if available, otherwise WASM
-      if (device === 'webgpu') {
-        console.log('✅ Using WebGPU for GPU acceleration');
-        this.piperEngine = new PiperWebWorkerEngine(new OnnxWebGPUWorkerRuntime());
-      } else {
-        console.log('⚠️  Using WASM (CPU-only)');
-        this.piperEngine = new PiperWebEngine();
-      }
-
-      // Initialize voice provider
-      this.piperVoiceProvider = new HuggingFaceVoiceProvider();
-
-      // Load available voices (optional, for voice selection later)
-      try {
-        console.log('📥 Loading available Piper voices...');
-        this.piperAvailableVoices = await this.piperVoiceProvider.voices();
-        console.log(`✅ Loaded ${this.piperAvailableVoices.length} voices`);
-      } catch (voiceError) {
-        console.warn('Could not load voice list, using default voice:', voiceError);
-      }
-
-      // Test audio generation
-      console.log('🧪 Testing Piper audio generation...');
-      const testResult = await this.piperEngine.generate('Hello', this.piperVoice, 0);
-
-      if (testResult && testResult.audio) {
-        console.log('✅ Piper audio test successful');
-        this.piperReady = true;
-        this.piperLoading = false;
-        this.piperDevice = device;
-        console.log(`🎉 Piper TTS initialized successfully with ${device}`);
-        return true;
-      } else {
-        throw new Error('Piper test audio generation failed');
-      }
-
-    } catch (error) {
-      console.error('Failed to initialize Piper TTS:', error);
-      this.piperLoading = false;
-      this.piperReady = false;
-      throw error;
+        await this.initializeBrowserTTS();
     }
   }
 
@@ -504,13 +416,6 @@ class TTSService {
     } = options;
 
     switch (this.provider) {
-      case 'piper':
-        if (this.piperReady) {
-          return this.speakPiper(text, { voice, rate });
-        } else {
-          console.warn('Piper not ready, falling back to browser TTS');
-          return this.speakBrowser(text, { rate, pitch, volume });
-        }
       case 'kokoro':
         if (this.kokoroReady) {
           return this.speakKokoro(text, { voice, rate });
@@ -525,49 +430,6 @@ class TTSService {
         return this.speakBrowser(text, { rate, pitch, volume }); // Fallback
       default:
         return this.speakBrowser(text, { rate, pitch, volume });
-    }
-  }
-
-  /**
-   * Speak using Piper TTS
-   * Piper returns audio as Float32Array which we play using Web Audio API
-   */
-  async speakPiper(text, { voice = null, rate = 0.9 }) {
-    try {
-      const startTime = performance.now();
-      console.log('🎤 Generating speech with Piper:', text.substring(0, 50) + '...');
-
-      const selectedVoice = voice || this.piperVoice;
-      const speakerId = 0; // Default speaker
-
-      // Generate audio
-      const genStart = performance.now();
-      const result = await this.piperEngine.generate(text, selectedVoice, speakerId);
-      const genTime = performance.now() - genStart;
-      console.log(`🔄 Generated Piper audio in ${genTime.toFixed(0)}ms`);
-
-      if (!result || !result.audio) {
-        throw new Error('Piper generated no audio data');
-      }
-
-      // Piper returns { audio: Float32Array, sampleRate: number, phonemes: [...] }
-      const audioData = {
-        audio: result.audio,
-        sampling_rate: result.sampleRate || 22050
-      };
-
-      // Play using existing Web Audio API method
-      const playStart = performance.now();
-      await this.playKokoroAudio(audioData); // Reuse Kokoro playback (works with Float32Array)
-      const playTime = performance.now() - playStart;
-
-      const totalTime = performance.now() - startTime;
-      console.log(`✅ Total Piper TTS time: ${totalTime.toFixed(0)}ms (gen: ${genTime.toFixed(0)}ms, play: ${playTime.toFixed(0)}ms)`);
-
-    } catch (error) {
-      console.error('Failed to generate Piper speech:', error);
-      console.log('Falling back to browser TTS');
-      return this.speakBrowser(text, { rate: 0.9, pitch: 1.0, volume: 1.0 });
     }
   }
 
@@ -873,7 +735,7 @@ class TTSService {
   stop() {
     if (this.provider === 'browser') {
       speechSynthesis.cancel();
-    } else if ((this.provider === 'piper' || this.provider === 'kokoro') && this.currentSource) {
+    } else if (this.provider === 'kokoro' && this.currentSource) {
       try {
         this.currentSource.stop();
         this.currentSource = null;
@@ -953,14 +815,6 @@ class TTSService {
    * Get current voice info
    */
   getCurrentVoice() {
-    if (this.provider === 'piper') {
-      return {
-        provider: 'piper',
-        voice: this.piperVoice,
-        device: this.piperDevice || 'unknown'
-      };
-    }
-
     if (this.provider === 'kokoro') {
       const voices = this.getKokoroVoices();
       const currentVoice = voices.find(v => v.id === this.kokoroVoice);
@@ -984,9 +838,6 @@ class TTSService {
    * Check if TTS is ready
    */
   isReady() {
-    if (this.provider === 'piper') {
-      return this.piperReady;
-    }
     if (this.provider === 'kokoro') {
       return this.kokoroReady;
     }
@@ -1000,7 +851,7 @@ class TTSService {
     return {
       provider: this.provider,
       ready: this.isReady(),
-      loading: this.piperLoading || this.kokoroLoading,
+      loading: this.kokoroLoading,
       voice: this.getCurrentVoice()
     };
   }

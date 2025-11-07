@@ -199,26 +199,14 @@ class CompanionChat extends LitElement {
     this.ttsLoading = true;
 
     try {
-      // Use Piper for high-quality, fast speech
-      await ttsService.initialize('piper', null, (progress) => {
-        this.ttsProgress = progress || { status: 'loading', progress: 0 };
-        this.requestUpdate();
-      });
-
+      // Use browser TTS for fast, reliable speech
+      await ttsService.initialize('browser');
       this.ttsReady = true;
       const currentVoice = ttsService.getCurrentVoice();
-      console.log('🔊 TTS initialized with Piper voice:', currentVoice);
+      console.log('🔊 TTS initialized with browser voice:', currentVoice);
     } catch (error) {
-      console.error('Failed to initialize Piper, falling back to browser TTS:', error);
-      // Fallback to browser TTS
-      try {
-        await ttsService.initialize('browser');
-        this.ttsReady = true;
-        console.log('🔊 Using browser TTS fallback');
-      } catch (fallbackError) {
-        console.error('All TTS failed:', fallbackError);
-        this.ttsReady = false;
-      }
+      console.error('Failed to initialize browser TTS:', error);
+      this.ttsReady = false;
     } finally {
       this.ttsLoading = false;
     }

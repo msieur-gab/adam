@@ -1,19 +1,8 @@
 import { defineConfig } from 'vite';
-import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export default defineConfig({
   // Set base path for GitHub Pages
   base: process.env.GITHUB_PAGES ? '/adam/' : '/',
-
-  plugins: [
-    viteStaticCopy({
-      targets: [
-        { src: 'node_modules/piper-tts-web/dist/onnx', dest: '.' },
-        { src: 'node_modules/piper-tts-web/dist/piper', dest: '.' },
-        { src: 'node_modules/piper-tts-web/dist/worker', dest: '.' },
-      ]
-    }),
-  ],
 
   build: {
     target: 'esnext',
@@ -25,8 +14,7 @@ export default defineConfig({
           'lit': ['lit'],
           'dexie': ['dexie'],
           'transformers': ['@xenova/transformers'],
-          'kokoro': ['kokoro-js'],
-          'piper': ['piper-tts-web']
+          'kokoro': ['kokoro-js']
         }
       }
     }
@@ -38,6 +26,6 @@ export default defineConfig({
   },
 
   optimizeDeps: {
-    include: ['lit', 'dexie', 'kokoro-js', 'piper-tts-web']
+    include: ['lit', 'dexie', 'kokoro-js']
   }
 });
