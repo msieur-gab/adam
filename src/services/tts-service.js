@@ -107,10 +107,10 @@ class TTSService {
 
       const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-      // Force WASM + q8 for reliability (works everywhere)
-      // TODO: Fix WebGPU silent audio issue before re-enabling
+      // Try q4 for faster WASM generation (trades quality for speed)
+      // Options: fp32 (slow, best), q8 (medium, good), q4 (fast, okay)
       const device = 'wasm';
-      const dtype = 'q8';
+      const dtype = 'q4';  // Faster than q8, lower quality
 
       console.log('🚀 Using device:', device, 'with dtype:', dtype);
       console.log('💡 Performance tip: WebGPU is 10-100x faster than WASM');
