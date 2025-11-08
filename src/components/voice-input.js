@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { ttsService } from '../services/tts-service.js';
 
 /**
  * Voice Input Component
@@ -247,6 +248,16 @@ class VoiceInput extends LitElement {
     this.error = '';
     this.transcript = '';
     this.listening = true;
+
+    // Stop any ongoing TTS playback when user clicks mic
+    ttsService.stop();
+    console.log('[VoiceInput] Stopped TTS for new voice input');
+
+    // Dispatch event to signal interruption (for companion-chat to cancel pending responses)
+    this.dispatchEvent(new CustomEvent('voice-interrupt', {
+      bubbles: true,
+      composed: true
+    }));
 
     try {
       this.recognition.start();

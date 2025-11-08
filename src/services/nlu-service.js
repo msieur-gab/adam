@@ -8,6 +8,9 @@ export class NLUService {
     this.questionWords = ['what', 'when', 'where', 'who', 'whom', 'why', 'how', 'which'];
     this.temporalPatterns = this.initTemporalPatterns();
     this.intentPatterns = this.initIntentPatterns();
+    this.actionPatterns = this.initActionPatterns();
+    this.subjectPatterns = this.initSubjectPatterns();
+    this.aspectPatterns = this.initAspectPatterns();
   }
 
   /**
@@ -19,12 +22,23 @@ export class NLUService {
   async analyze(input, context = {}) {
     const normalized = input.toLowerCase().trim();
 
+    // Extract question type first
+    const questionType = this.extractQuestionType(normalized);
+
     const analysis = {
       originalInput: input,
       normalized,
-      questionType: this.extractQuestionType(normalized),
+
+      // Multi-dimensional understanding
+      action: null,           // query, remind, tell, check, set
+      subject: null,          // weather, medication, family, time, date
+      questionType: questionType,     // what, when, why, how, who, where
+      questionAspect: null,   // temperature, conditions, time, reason, name
+
+      // Legacy intent for backward compatibility
       intent: null,
       confidence: 0,
+
       entities: {},
       slots: {},
       temporal: null,
@@ -35,11 +49,18 @@ export class NLUService {
     // Extract entities
     analysis.entities = this.extractEntities(normalized);
 
-    // Determine intent
-    const intentResult = this.classifyIntent(normalized, analysis.entities);
-    analysis.intent = intentResult.intent;
-    analysis.confidence = intentResult.confidence;
-    analysis.slots = intentResult.slots;
+    // Analyze dimensions in parallel
+    const dimensions = this.analyzeDimensions(normalized, analysis.entities, questionType);
+    analysis.action = dimensions.action;
+    analysis.subject = dimensions.subject;
+    analysis.questionAspect = dimensions.aspect;
+
+    // Build legacy intent for backward compatibility (action_subject)
+    analysis.intent = this.buildIntent(dimensions.action, dimensions.subject);
+    analysis.confidence = dimensions.confidence;
+
+    // Extract slots based on subject dimension
+    analysis.slots = this.extractSlots(dimensions.subject, normalized, analysis.entities);
 
     // Process temporal expressions
     if (analysis.entities.temporal) {
@@ -366,7 +387,210 @@ export class NLUService {
   }
 
   /**
-   * Classify intent based on patterns and entities
+   * Analyze all dimensions in parallel (multi-dimensional understanding)
+   * @param {string} text - Normalized input text
+   * @param {Object} entities - Extracted entities
+   * @param {string} questionType - Question type (what, when, etc.)
+   * @returns {Object} Multi-dimensional analysis
+   */
+  analyzeDimensions(text, entities, questionType) {
+    // Classify action dimension
+    const action = this.classifyAction(text, questionType);
+
+    // Classify subject dimension
+    const subject = this.classifySubject(text, entities);
+
+    // Classify aspect dimension (based on question type and subject)
+    const aspect = this.classifyAspect(text, questionType, subject);
+
+    // Calculate overall confidence
+    const confidence = this.calculateConfidence(action, subject, entities);
+
+    return {
+      action: action || 'query',
+      subject: subject || 'unknown',
+      aspect: aspect || null,
+      confidence
+    };
+  }
+
+  /**
+   * Classify action dimension (what user wants to DO)
+   */
+  classifyAction(text, questionType) {
+    let bestAction = null;
+    let bestScore = 0;
+
+    for (const [actionName, config] of Object.entries(this.actionPatterns)) {
+      let score = 0;
+
+      // Check patterns
+      for (const pattern of config.patterns) {
+        if (new RegExp(pattern, 'i').test(text)) {
+          score += 0.5;
+        }
+      }
+
+      // Check keywords
+      for (const keyword of config.keywords) {
+        if (text.includes(keyword)) {
+          score += 0.3;
+        }
+      }
+
+      // Boost score if question type matches
+      if (config.questionTypes.includes(questionType)) {
+        score += 0.2;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestAction = actionName;
+      }
+    }
+
+    return bestAction || 'query';
+  }
+
+  /**
+   * Classify subject dimension (WHAT they're asking about)
+   */
+  classifySubject(text, entities) {
+    let bestSubject = null;
+    let bestScore = 0;
+
+    for (const [subjectName, config] of Object.entries(this.subjectPatterns)) {
+      let score = 0;
+
+      // Check patterns
+      for (const pattern of config.patterns) {
+        if (new RegExp(pattern, 'i').test(text)) {
+          score += 0.5;
+        }
+      }
+
+      // Check keywords
+      for (const keyword of config.keywords) {
+        if (text.includes(keyword)) {
+          score += 0.3;
+        }
+      }
+
+      // Boost score if required entities are present
+      if (config.entityHints) {
+        for (const entityType of config.entityHints) {
+          if (entities[entityType]) {
+            score += 0.2;
+          }
+        }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestSubject = subjectName;
+      }
+    }
+
+    return bestSubject;
+  }
+
+  /**
+   * Classify aspect dimension (WHICH aspect of the subject)
+   */
+  classifyAspect(text, questionType, subject) {
+    // Get aspects for this subject
+    const subjectAspects = this.aspectPatterns[subject];
+    if (!subjectAspects) return null;
+
+    let bestAspect = null;
+    let bestScore = 0;
+
+    for (const [aspectName, config] of Object.entries(subjectAspects)) {
+      let score = 0;
+
+      // Check patterns
+      for (const pattern of config.patterns) {
+        if (new RegExp(pattern, 'i').test(text)) {
+          score += 0.5;
+        }
+      }
+
+      // Check keywords
+      for (const keyword of config.keywords) {
+        if (text.includes(keyword)) {
+          score += 0.3;
+        }
+      }
+
+      // Boost score if question type matches
+      if (config.questionTypes && config.questionTypes.includes(questionType)) {
+        score += 0.2;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestAspect = aspectName;
+      }
+    }
+
+    return bestAspect;
+  }
+
+  /**
+   * Calculate overall confidence score
+   */
+  calculateConfidence(action, subject, entities) {
+    let confidence = 0;
+
+    // Base confidence if we have action and subject
+    if (action && subject) {
+      confidence = 0.6;
+    } else if (action || subject) {
+      confidence = 0.3;
+    }
+
+    // Boost confidence for each entity found
+    const entityCount = Object.keys(entities).length;
+    confidence += Math.min(0.3, entityCount * 0.1);
+
+    return Math.min(1, confidence);
+  }
+
+  /**
+   * Build legacy intent for backward compatibility (action_subject)
+   */
+  buildIntent(action, subject) {
+    if (!action || !subject) {
+      return 'unknown';
+    }
+
+    // Map common patterns to legacy intent names
+    const intentMap = {
+      'query_weather': 'weather_query',
+      'check_weather': 'weather_query',
+      'query_date': 'date_query',
+      'check_date': 'date_query',
+      'query_time': 'time_query',
+      'check_time': 'time_query',
+      'query_medication': 'medication_query',
+      'check_medication': 'medication_query',
+      'query_family': 'family_query',
+      'check_family': 'family_query',
+      'query_doctor': 'doctor_query',
+      'check_doctor': 'doctor_query',
+      'query_hydration': 'hydration_query',
+      'check_hydration': 'hydration_query',
+      'greet_unknown': 'greeting',
+      'farewell_unknown': 'farewell',
+      'thank_unknown': 'gratitude'
+    };
+
+    const combined = `${action}_${subject}`;
+    return intentMap[combined] || combined;
+  }
+
+  /**
+   * Classify intent based on patterns and entities (LEGACY - kept for compatibility)
    */
   classifyIntent(text, entities) {
     let bestIntent = null;
@@ -425,30 +649,38 @@ export class NLUService {
   }
 
   /**
-   * Extract slots (parameters) for specific intent
+   * Extract slots (parameters) based on subject dimension
    */
-  extractSlots(intent, text, entities) {
+  extractSlots(subject, text, entities) {
     const slots = {};
 
-    switch (intent) {
-      case 'weather_query':
+    switch (subject) {
+      case 'weather':
         slots.location = entities.location?.value || null;
         slots.date = entities.temporal?.value || 'today';
         break;
 
-      case 'date_query':
+      case 'date':
         slots.temporal = entities.temporal?.value || 'today';
         break;
 
-      case 'time_query':
+      case 'time':
         slots.temporal = entities.temporal?.value || 'now';
         break;
 
-      case 'family_query':
+      case 'family':
         slots.person = entities.person?.relation || null;
         break;
 
-      case 'medication_query':
+      case 'medication':
+        slots.temporal = entities.temporal?.value || 'now';
+        break;
+
+      case 'doctor':
+        slots.temporal = entities.temporal?.value || 'now';
+        break;
+
+      case 'hydration':
         slots.temporal = entities.temporal?.value || 'now';
         break;
 
@@ -594,6 +826,298 @@ export class NLUService {
         ],
         keywords: ['thank', 'thanks'],
         requiredEntities: []
+      }
+    };
+  }
+
+  /**
+   * Initialize action patterns (what user wants to DO)
+   */
+  initActionPatterns() {
+    return {
+      query: {
+        patterns: [
+          '\\bwhat\\b',
+          '\\bwho\\b',
+          '\\bwhere\\b',
+          '\\bhow\\b',
+          '\\btell me\\b',
+          '\\bshow me\\b'
+        ],
+        keywords: ['what', 'tell', 'show', 'know'],
+        questionTypes: ['what', 'who', 'where', 'how', 'which', 'question']
+      },
+      check: {
+        patterns: [
+          '\\bcheck\\b',
+          '\\bis\\b.*\\?',
+          '\\bare\\b.*\\?',
+          '\\bdid\\b.*\\?',
+          '\\bcan you\\b'
+        ],
+        keywords: ['check', 'verify', 'confirm', 'is', 'are'],
+        questionTypes: ['statement', 'question']
+      },
+      remind: {
+        patterns: [
+          '\\bremind\\b',
+          '\\bdon\'t forget\\b',
+          '\\balert\\b',
+          '\\bnotify\\b'
+        ],
+        keywords: ['remind', 'alert', 'notify', 'remember'],
+        questionTypes: ['statement']
+      },
+      tell: {
+        patterns: [
+          '\\btell\\b',
+          '\\blet.*know\\b',
+          '\\binform\\b',
+          '\\bnotify\\b'
+        ],
+        keywords: ['tell', 'inform', 'let', 'say'],
+        questionTypes: ['statement']
+      },
+      set: {
+        patterns: [
+          '\\bset\\b',
+          '\\bcreate\\b',
+          '\\badd\\b',
+          '\\bschedule\\b'
+        ],
+        keywords: ['set', 'create', 'add', 'schedule'],
+        questionTypes: ['statement']
+      },
+      greet: {
+        patterns: [
+          '^\\s*(?:hi|hello|hey|good\\s+(?:morning|afternoon|evening))\\b'
+        ],
+        keywords: ['hi', 'hello', 'hey', 'good morning'],
+        questionTypes: ['statement']
+      },
+      farewell: {
+        patterns: [
+          '\\b(?:bye|goodbye|see\\s+you|good\\s+night)\\b'
+        ],
+        keywords: ['bye', 'goodbye', 'night'],
+        questionTypes: ['statement']
+      },
+      thank: {
+        patterns: [
+          '\\bthank\\s*(?:you)?\\b',
+          '\\bthanks\\b'
+        ],
+        keywords: ['thank', 'thanks'],
+        questionTypes: ['statement']
+      }
+    };
+  }
+
+  /**
+   * Initialize subject patterns (WHAT they're asking about)
+   */
+  initSubjectPatterns() {
+    return {
+      weather: {
+        patterns: [
+          '\\bweather\\b',
+          '\\btemperature\\b',
+          '\\brain\\b',
+          '\\bsnow\\b',
+          '\\bcloudy\\b',
+          '\\bsunny\\b',
+          '\\bforecast\\b',
+          '\\bhot\\b',
+          '\\bcold\\b',
+          '\\bwarm\\b'
+        ],
+        keywords: ['weather', 'temperature', 'rain', 'forecast', 'sunny', 'cloudy'],
+        entityHints: ['temporal', 'location']
+      },
+      date: {
+        patterns: [
+          '\\bdate\\b',
+          '\\bday\\s+(?:is\\s+)?(?:it|today)\\b',
+          '\\bwhat\\s+day\\b',
+          '\\btoday\\b',
+          '\\btomorrow\\b',
+          '\\byesterday\\b'
+        ],
+        keywords: ['date', 'day', 'today', 'tomorrow', 'yesterday'],
+        entityHints: ['temporal']
+      },
+      time: {
+        patterns: [
+          '\\btime\\b',
+          '\\bwhat\\s+time\\b',
+          '\\bclock\\b',
+          '\\bhour\\b'
+        ],
+        keywords: ['time', 'clock', 'hour'],
+        entityHints: ['temporal']
+      },
+      medication: {
+        patterns: [
+          '\\bmedication\\b',
+          '\\bmedicine\\b',
+          '\\bpill\\b',
+          '\\btablet\\b',
+          '\\bmeds\\b',
+          '\\bdrug\\b'
+        ],
+        keywords: ['medication', 'medicine', 'pill', 'meds'],
+        entityHints: ['temporal']
+      },
+      family: {
+        patterns: [
+          '\\bfamily\\b',
+          '\\bdaughter\\b',
+          '\\bson\\b',
+          '\\bgrandson\\b',
+          '\\bgranddaughter\\b',
+          '\\bwife\\b',
+          '\\bhusband\\b',
+          '\\bbrother\\b',
+          '\\bsister\\b'
+        ],
+        keywords: ['family', 'daughter', 'son', 'grandson', 'granddaughter'],
+        entityHints: ['person']
+      },
+      doctor: {
+        patterns: [
+          '\\bdoctor\\b',
+          '\\bappointment\\b',
+          '\\bphysician\\b',
+          '\\bcheckup\\b',
+          '\\bmedical\\b'
+        ],
+        keywords: ['doctor', 'appointment', 'physician', 'checkup'],
+        entityHints: ['temporal']
+      },
+      hydration: {
+        patterns: [
+          '\\bwater\\b',
+          '\\bdrink\\b',
+          '\\bhydrat\\b',
+          '\\bthirsty\\b',
+          '\\bfluid\\b'
+        ],
+        keywords: ['water', 'drink', 'hydration', 'thirsty'],
+        entityHints: ['temporal']
+      },
+      unknown: {
+        patterns: [],
+        keywords: [],
+        entityHints: []
+      }
+    };
+  }
+
+  /**
+   * Initialize aspect patterns (WHICH aspect of the subject)
+   */
+  initAspectPatterns() {
+    return {
+      weather: {
+        temperature: {
+          patterns: [
+            '\\btemperature\\b',
+            '\\bhot\\b',
+            '\\bcold\\b',
+            '\\bwarm\\b',
+            '\\bdegrees\\b'
+          ],
+          keywords: ['temperature', 'hot', 'cold', 'warm', 'degrees'],
+          questionTypes: ['what', 'how']
+        },
+        conditions: {
+          patterns: [
+            '\\bconditions\\b',
+            '\\brain\\b',
+            '\\bsnow\\b',
+            '\\bcloudy\\b',
+            '\\bsunny\\b',
+            '\\blike\\b'
+          ],
+          keywords: ['conditions', 'rain', 'snow', 'cloudy', 'sunny', 'like'],
+          questionTypes: ['what', 'how']
+        },
+        forecast: {
+          patterns: [
+            '\\bforecast\\b',
+            '\\bwill be\\b',
+            '\\blook like\\b'
+          ],
+          keywords: ['forecast', 'will', 'going to'],
+          questionTypes: ['what', 'how']
+        }
+      },
+      date: {
+        today: {
+          patterns: ['\\btoday\\b'],
+          keywords: ['today'],
+          questionTypes: ['what']
+        },
+        day_of_week: {
+          patterns: [
+            '\\bday\\s+of\\s+week\\b',
+            '\\bwhat\\s+day\\b'
+          ],
+          keywords: ['day'],
+          questionTypes: ['what']
+        }
+      },
+      time: {
+        current: {
+          patterns: [
+            '\\bnow\\b',
+            '\\bcurrent\\b',
+            '\\bright now\\b'
+          ],
+          keywords: ['now', 'current', 'right now'],
+          questionTypes: ['what']
+        }
+      },
+      medication: {
+        schedule: {
+          patterns: [
+            '\\bwhen\\b',
+            '\\bschedule\\b',
+            '\\btake\\b'
+          ],
+          keywords: ['when', 'schedule', 'take', 'time'],
+          questionTypes: ['when']
+        },
+        dosage: {
+          patterns: [
+            '\\bhow much\\b',
+            '\\bdosage\\b',
+            '\\bamount\\b'
+          ],
+          keywords: ['how much', 'dosage', 'amount'],
+          questionTypes: ['how', 'what']
+        }
+      },
+      family: {
+        contact: {
+          patterns: [
+            '\\bphone\\b',
+            '\\bcall\\b',
+            '\\bcontact\\b',
+            '\\bnumber\\b'
+          ],
+          keywords: ['phone', 'call', 'contact', 'number'],
+          questionTypes: ['what', 'how']
+        },
+        status: {
+          patterns: [
+            '\\bhow\\s+is\\b',
+            '\\bdoing\\b',
+            '\\bwell\\b'
+          ],
+          keywords: ['how', 'doing', 'well'],
+          questionTypes: ['how']
+        }
       }
     };
   }

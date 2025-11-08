@@ -5,6 +5,7 @@
  */
 
 import { weatherService } from './weather-service.js';
+import { saveProfile, getProfile } from '../services/db-service.js';
 
 export class ServiceRegistry {
   constructor() {
@@ -73,6 +74,11 @@ export class ServiceRegistry {
       // Execute service query
       const result = await service.query(enrichedSlots);
 
+      // Save location to profile if provided in weather query
+      if (intent === 'weather_query' && enrichedSlots.location) {
+        await this.saveLocationToProfile(enrichedSlots.location, result);
+      }
+
       return {
         success: true,
         data: result,
@@ -93,6 +99,39 @@ export class ServiceRegistry {
   }
 
   /**
+   * Save location to user profile for future queries
+   */
+  async saveLocationToProfile(locationQuery, weatherResult) {
+    try {
+      const currentProfile = await getProfile();
+
+      if (!currentProfile) {
+        console.warn('[ServiceRegistry] No profile found, cannot save location');
+        return;
+      }
+
+      // Extract location details from weather result
+      const locationData = {
+        city: weatherResult.location || locationQuery,
+        country: weatherResult.country || '',
+        timezone: weatherResult.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+      };
+
+      // Update profile with location
+      const updatedProfile = {
+        ...currentProfile,
+        location: locationData
+      };
+
+      await saveProfile(updatedProfile);
+      console.log('📍 Saved location to profile:', locationData.city);
+
+    } catch (error) {
+      console.error('[ServiceRegistry] Failed to save location:', error);
+    }
+  }
+
+  /**
    * Enrich slots with user profile data
    */
   enrichSlots(slots, userProfile) {
@@ -103,6 +142,7 @@ export class ServiceRegistry {
     // Auto-fill location if not provided
     if (!enriched.location && userProfile.location?.city) {
       enriched.location = userProfile.location.city;
+      console.log('📍 Using saved location from profile:', userProfile.location.city);
     }
 
     // Auto-fill timezone

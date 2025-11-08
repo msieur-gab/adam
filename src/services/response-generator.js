@@ -4,6 +4,7 @@
  */
 
 import { serviceRegistry } from '../api/service-registry.js';
+import { pluginManager } from '../plugins/plugin-manager.js';
 import { getUserProfile } from './db-service.js';
 
 export class ResponseGenerator {
@@ -33,7 +34,7 @@ export class ResponseGenerator {
       entities: nluResult.entities,
 
       // Data from services
-      data: serviceResult?.data || null,
+      data: serviceResult?.isPlugin ? serviceResult : (serviceResult?.data || null),
 
       // Data sources
       sources: serviceResult ? [{
@@ -68,14 +69,26 @@ export class ResponseGenerator {
     // Generate response text based on intent
     try {
       if (serviceResult && serviceResult.success) {
+        // For plugins, data is in the result itself, not nested under .data
+        const data = serviceResult.isPlugin ? serviceResult : serviceResult.data;
+
         // Generate response using service data
         response.text = this.generateServiceResponse(
           nluResult,
-          serviceResult.data,
+          data,
+          userProfile
+        );
+      } else if (serviceResult && !serviceResult.success) {
+        // Service failed - check for specific errors
+        response.error = serviceResult.error;
+        response.text = this.generateErrorResponse(
+          nluResult.intent,
+          serviceResult.error,
+          nluResult,
           userProfile
         );
       } else {
-        // Generate response using templates
+        // No service needed - generate response using templates
         response.text = this.generateTemplateResponse(
           nluResult,
           userProfile
@@ -83,9 +96,10 @@ export class ResponseGenerator {
       }
 
       // Generate alternatives
+      const altData = serviceResult?.isPlugin ? serviceResult : serviceResult?.data;
       response.alternatives = this.generateAlternatives(
         nluResult,
-        serviceResult?.data,
+        altData,
         userProfile
       );
 
@@ -104,9 +118,32 @@ export class ResponseGenerator {
   }
 
   /**
-   * Execute external service if needed
+   * Execute external service or plugin if needed
    */
   async executeService(nluResult, userProfile) {
+    // Check if handled by plugin first
+    if (pluginManager.hasPluginForIntent(nluResult.intent)) {
+      console.log('[ResponseGenerator] Executing plugin for intent:', nluResult.intent);
+      try {
+        const result = await pluginManager.executePluginQuery(
+          nluResult.intent,
+          { ...nluResult.slots, entities: nluResult.entities }
+        );
+
+        return {
+          ...result,
+          isPlugin: true
+        };
+      } catch (error) {
+        console.error('[ResponseGenerator] Plugin execution failed:', error);
+        return {
+          success: false,
+          error: error.message,
+          isPlugin: true
+        };
+      }
+    }
+
     // Check if intent requires a service
     if (!serviceRegistry.hasServiceForIntent(nluResult.intent)) {
       return null;
@@ -136,6 +173,26 @@ export class ResponseGenerator {
   generateServiceResponse(nluResult, data, userProfile) {
     const { intent, temporal } = nluResult;
 
+    // Handle news plugin responses
+    if (intent === 'news_headlines') {
+      return this.generateNewsHeadlinesResponse(data, userProfile);
+    }
+
+    if (intent === 'news_read' || intent === 'news_select') {
+      return this.generateNewsArticleResponse(data, userProfile);
+    }
+
+    // Handle ambient sound plugin responses
+    if (intent === 'ambient_play') {
+      return this.generateAmbientSoundResponse(data, userProfile);
+    }
+
+    // Handle reminder plugin responses
+    if (intent === 'reminder_create') {
+      return this.generateReminderResponse(data, userProfile);
+    }
+
+    // Handle core intents
     switch (intent) {
       case 'weather_query':
         return this.generateWeatherResponse(data, temporal, userProfile);
@@ -143,6 +200,99 @@ export class ResponseGenerator {
       default:
         return this.generateTemplateResponse(nluResult, userProfile);
     }
+  }
+
+  /**
+   * Generate error response with helpful context
+   */
+  generateErrorResponse(intent, errorMessage, nluResult, userProfile) {
+    // Handle specific error cases
+    if (intent === 'weather_query' && errorMessage.includes('Location is required')) {
+      // Weather query missing location
+      const userName = userProfile?.name || 'there';
+      const timeRef = nluResult.temporal?.formatted || 'today';
+
+      return `I'd love to tell you about the weather for ${timeRef}, but I need to know your location first. What city are you in?`;
+    }
+
+    // Handle other specific errors
+    if (errorMessage.includes('API')) {
+      return "I'm having trouble connecting to the weather service right now. Let me try again in a moment.";
+    }
+
+    // Generic fallback
+    return this.getFallbackResponse(intent);
+  }
+
+  /**
+   * Generate news headlines response
+   */
+  generateNewsHeadlinesResponse(data, userProfile) {
+    const { articles, count } = data;
+    const userName = userProfile?.name || '';
+
+    let response = `Here are the top ${count} headlines${userName ? ` for you, ${userName}` : ''}. `;
+
+    for (const article of articles) {
+      response += `Number ${article.number}: ${article.title}. `;
+    }
+
+    response += `Which one would you like me to read? Just say read article number 1, 2, 3, 4, or 5.`;
+
+    return response;
+  }
+
+  /**
+   * Generate news article response
+   */
+  generateNewsArticleResponse(data, userProfile) {
+    const { article, content } = data;
+
+    let response = `Article ${article.number}: ${article.title}. `;
+    response += content;
+
+    return response;
+  }
+
+  /**
+   * Generate ambient sound response
+   */
+  generateAmbientSoundResponse(data, userProfile) {
+    const { sound, duration, message } = data;
+
+    // Use the message provided by the plugin
+    if (message) {
+      return message;
+    }
+
+    // Fallback response
+    let response = `Playing ${sound}`;
+    if (duration) {
+      response += ` for ${duration} minutes`;
+    }
+    response += '.';
+
+    return response;
+  }
+
+  /**
+   * Generate reminder response
+   */
+  generateReminderResponse(data, userProfile) {
+    const { message, error } = data;
+
+    // Use the message provided by the plugin
+    if (message) {
+      return message;
+    }
+
+    // Fallback for errors
+    if (error) {
+      return 'Sorry, I couldn\'t create that reminder. Please try again.';
+    }
+
+    // Fallback response
+    return 'Reminder created successfully.';
   }
 
   /**
@@ -288,7 +438,9 @@ export class ResponseGenerator {
       date_query: '#4CAF50',
       time_query: '#FF9800',
       medication_query: '#F44336',
-      family_query: '#9C27B0'
+      family_query: '#9C27B0',
+      news_headlines: '#FF5722',
+      news_read: '#FF5722'
     };
 
     return colorMap[intent] || '#607D8B';

@@ -4,6 +4,7 @@ import './components/companion-chat.js';
 import './components/medication-reminder.js';
 import './services/db-service.js';
 import { db } from './services/db-service.js';
+import { initializePlugins } from './plugins/bootstrap.js';
 
 class AdamApp extends LitElement {
   static properties = {
@@ -85,6 +86,12 @@ class AdamApp extends LitElement {
     try {
       this.loading = true;
 
+      // Initialize plugin system first
+      await initializePlugins();
+
+      // Register service worker for background tasks (timers, reminders)
+      await this.registerServiceWorker();
+
       // Check if companion profile exists in Dexie
       const storedProfile = await db.settings.get('profile');
 
@@ -149,6 +156,42 @@ class AdamApp extends LitElement {
     await db.settings.put({ key: 'profile', data: demoProfile });
     this.profile = demoProfile;
     this.initialized = true;
+  }
+
+  async registerServiceWorker() {
+    // Check if service workers are supported
+    if (!('serviceWorker' in navigator)) {
+      console.warn('[App] Service workers not supported in this browser');
+      return;
+    }
+
+    try {
+      // Register the service worker
+      const registration = await navigator.serviceWorker.register('/sw.js', {
+        scope: '/'
+      });
+
+      console.log('[App] Service worker registered:', registration.scope);
+
+      // Wait for service worker to be ready
+      await navigator.serviceWorker.ready;
+      console.log('[App] Service worker ready');
+
+      // Listen for messages from service worker
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        console.log('[App] Message from service worker:', event.data);
+
+        const { type, data } = event.data;
+
+        // Dispatch custom event for other components to listen to
+        window.dispatchEvent(new CustomEvent('sw-message', {
+          detail: { type, data }
+        }));
+      });
+
+    } catch (error) {
+      console.error('[App] Service worker registration failed:', error);
+    }
   }
 
   render() {

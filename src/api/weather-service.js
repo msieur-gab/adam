@@ -1,12 +1,12 @@
 /**
  * Weather API Service
- * Provides weather information using OpenWeatherMap API
+ * Provides weather information using Open-Meteo API (free, no API key required)
  */
 
 import { BaseApiService } from './base-api-service.js';
 
 export class WeatherService extends BaseApiService {
-  constructor(apiKey = null) {
+  constructor() {
     super('weather', {
       cacheEnabled: true,
       cacheTTL: 3600000, // 1 hour cache
@@ -14,17 +14,8 @@ export class WeatherService extends BaseApiService {
       timeout: 8000
     });
 
-    this.apiKey = apiKey || this.getDefaultApiKey();
-    this.baseUrl = 'https://api.openweathermap.org/data/2.5';
-  }
-
-  /**
-   * Get default demo API key (limited calls)
-   * Users should provide their own key for production
-   */
-  getDefaultApiKey() {
-    // This is a demo key - users should get their own from openweathermap.org
-    return 'DEMO_KEY_REPLACE_WITH_REAL_KEY';
+    this.geocodingUrl = 'https://geocoding-api.open-meteo.com/v1/search';
+    this.weatherUrl = 'https://api.open-meteo.com/v1/forecast';
   }
 
   /**
@@ -37,146 +28,151 @@ export class WeatherService extends BaseApiService {
       throw new Error('Location is required for weather query');
     }
 
-    // Determine if we need current weather or forecast
-    const isToday = this.isToday(date);
-
-    if (isToday) {
-      return await this.getCurrentWeather(location, units);
-    } else {
-      return await this.getForecast(location, date, units);
-    }
-  }
-
-  /**
-   * Get current weather
-   */
-  async getCurrentWeather(location, units = 'metric') {
-    const endpoint = `${this.baseUrl}/weather`;
-    const params = new URLSearchParams({
-      q: location,
-      units: units,
-      appid: this.apiKey
-    });
-
     try {
-      const response = await this.request(`${endpoint}?${params}`, {
-        params: { location, type: 'current' }
-      });
-      return response;
+      // Step 1: Geocode location to get coordinates
+      const geo = await this.geocodeLocation(location);
+
+      if (!geo) {
+        throw new Error(`Could not find location: ${location}`);
+      }
+
+      // Step 2: Fetch weather using coordinates
+      const tempUnit = units === 'imperial' ? 'fahrenheit' : 'celsius';
+      const weatherData = await this.fetchWeather(geo.latitude, geo.longitude, tempUnit, date);
+
+      // Step 3: Transform to standard format
+      return {
+        location: geo.name,
+        country: geo.country,
+        timezone: geo.timezone,
+        date: weatherData.time,
+        temperature: {
+          current: weatherData.temperature,
+          feelsLike: weatherData.apparent_temperature,
+          min: weatherData.temperature - 5, // Open-Meteo doesn't provide min/max for current
+          max: weatherData.temperature + 5
+        },
+        conditions: this.getWeatherDescription(weatherData.weathercode),
+        icon: this.getWeatherIcon(weatherData.weathercode),
+        humidity: weatherData.humidity,
+        windSpeed: weatherData.windspeed,
+        precipitation: 0, // Would need hourly data for this
+        clouds: 0,
+        source: 'open-meteo',
+        timestamp: new Date().toISOString()
+      };
+
     } catch (error) {
-      // Return mock data if API fails (for demo purposes)
-      console.warn('Weather API failed, using mock data');
+      console.error('Weather API error:', error);
+      // Return mock data as fallback
       return this.getMockCurrentWeather(location, units);
     }
   }
 
   /**
-   * Get weather forecast
+   * Geocode location to coordinates using Open-Meteo
    */
-  async getForecast(location, date, units = 'metric') {
-    const endpoint = `${this.baseUrl}/forecast`;
+  async geocodeLocation(location) {
+    const url = `${this.geocodingUrl}?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (!data.results || data.results.length === 0) {
+      return null;
+    }
+
+    const result = data.results[0];
+    return {
+      name: result.name,
+      latitude: result.latitude,
+      longitude: result.longitude,
+      country: result.country || '',
+      timezone: result.timezone || 'UTC'
+    };
+  }
+
+  /**
+   * Fetch weather from Open-Meteo API
+   */
+  async fetchWeather(latitude, longitude, tempUnit, targetDate = null) {
+    // Build URL with parameters
     const params = new URLSearchParams({
-      q: location,
-      units: units,
-      appid: this.apiKey
+      latitude: latitude,
+      longitude: longitude,
+      current: 'temperature_2m,apparent_temperature,weathercode,windspeed_10m,relativehumidity_2m',
+      temperature_unit: tempUnit,
+      windspeed_unit: tempUnit === 'fahrenheit' ? 'mph' : 'kmh',
+      timezone: 'auto'
     });
 
-    try {
-      const response = await this.request(`${endpoint}?${params}`, {
-        params: { location, type: 'forecast' }
-      });
+    const url = `${this.weatherUrl}?${params}`;
+    const response = await fetch(url);
+    const data = await response.json();
 
-      // Find forecast for specific date
-      const targetForecast = this.findForecastForDate(response, date);
-      return targetForecast;
-
-    } catch (error) {
-      // Return mock data if API fails
-      console.warn('Weather API failed, using mock data');
-      return this.getMockForecast(location, date, units);
-    }
-  }
-
-  /**
-   * Transform API response to standard format
-   */
-  async transform(response) {
-    // Check if it's current weather or forecast
-    if (response.list) {
-      // Forecast response - transform first item
-      const forecast = response.list[0];
-      return {
-        location: response.city.name,
-        country: response.city.country,
-        date: new Date(forecast.dt * 1000).toISOString(),
-        temperature: {
-          current: forecast.main.temp,
-          feelsLike: forecast.main.feels_like,
-          min: forecast.main.temp_min,
-          max: forecast.main.temp_max
-        },
-        conditions: forecast.weather[0].description,
-        icon: forecast.weather[0].icon,
-        humidity: forecast.main.humidity,
-        windSpeed: forecast.wind.speed,
-        precipitation: forecast.pop ? forecast.pop * 100 : 0,
-        clouds: forecast.clouds.all,
-        source: 'openweathermap',
-        timestamp: new Date().toISOString()
-      };
-    } else {
-      // Current weather response
-      return {
-        location: response.name,
-        country: response.sys.country,
-        date: new Date(response.dt * 1000).toISOString(),
-        temperature: {
-          current: response.main.temp,
-          feelsLike: response.main.feels_like,
-          min: response.main.temp_min,
-          max: response.main.temp_max
-        },
-        conditions: response.weather[0].description,
-        icon: response.weather[0].icon,
-        humidity: response.main.humidity,
-        windSpeed: response.wind.speed,
-        precipitation: response.rain ? response.rain['1h'] || 0 : 0,
-        clouds: response.clouds.all,
-        source: 'openweathermap',
-        timestamp: new Date().toISOString()
-      };
-    }
-  }
-
-  /**
-   * Find forecast for specific date
-   */
-  findForecastForDate(forecastResponse, targetDate) {
-    if (!targetDate || !forecastResponse.list) {
-      return forecastResponse.list[0]; // Return first forecast
-    }
-
-    const target = new Date(targetDate);
-    target.setHours(12, 0, 0, 0); // Noon
-
-    // Find closest forecast to target date
-    let closest = forecastResponse.list[0];
-    let closestDiff = Math.abs(new Date(closest.dt * 1000) - target);
-
-    for (const forecast of forecastResponse.list) {
-      const forecastDate = new Date(forecast.dt * 1000);
-      const diff = Math.abs(forecastDate - target);
-
-      if (diff < closestDiff) {
-        closest = forecast;
-        closestDiff = diff;
-      }
+    if (!data.current) {
+      throw new Error('Invalid weather data received');
     }
 
     return {
-      ...forecastResponse,
-      list: [closest]
+      time: data.current.time,
+      temperature: data.current.temperature_2m,
+      apparent_temperature: data.current.apparent_temperature,
+      weathercode: data.current.weathercode,
+      windspeed: data.current.windspeed_10m,
+      humidity: data.current.relativehumidity_2m
     };
+  }
+
+  /**
+   * Convert WMO weather code to human-readable description
+   * https://open-meteo.com/en/docs
+   */
+  getWeatherDescription(code) {
+    const weatherCodes = {
+      0: 'clear sky',
+      1: 'mainly clear',
+      2: 'partly cloudy',
+      3: 'overcast',
+      45: 'foggy',
+      48: 'depositing rime fog',
+      51: 'light drizzle',
+      53: 'moderate drizzle',
+      55: 'dense drizzle',
+      61: 'slight rain',
+      63: 'moderate rain',
+      65: 'heavy rain',
+      71: 'slight snow',
+      73: 'moderate snow',
+      75: 'heavy snow',
+      77: 'snow grains',
+      80: 'slight rain showers',
+      81: 'moderate rain showers',
+      82: 'violent rain showers',
+      85: 'slight snow showers',
+      86: 'heavy snow showers',
+      95: 'thunderstorm',
+      96: 'thunderstorm with slight hail',
+      99: 'thunderstorm with heavy hail'
+    };
+
+    return weatherCodes[code] || 'unknown';
+  }
+
+  /**
+   * Get weather icon based on WMO code
+   */
+  getWeatherIcon(code) {
+    // Map to simple icon names
+    if (code === 0) return 'clear';
+    if (code <= 3) return 'partly-cloudy';
+    if (code <= 48) return 'fog';
+    if (code <= 55) return 'drizzle';
+    if (code <= 65) return 'rain';
+    if (code <= 77) return 'snow';
+    if (code <= 82) return 'rain-showers';
+    if (code <= 86) return 'snow-showers';
+    return 'thunderstorm';
   }
 
   /**

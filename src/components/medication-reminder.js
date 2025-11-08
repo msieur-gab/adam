@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { db, completeReminder } from '../services/db-service.js';
+import { reminderService } from '../services/reminder-service.js';
 
 /**
  * Medication Reminder Component
@@ -123,120 +124,85 @@ class MedicationReminder extends LitElement {
     this.profile = null;
     this.activeReminders = [];
     this.nextReminder = null;
-    this.checkInterval = null;
+
+    // Bind event handlers
+    this.boundReminderFiredHandler = this.handleReminderFired.bind(this);
+    this.boundReminderCompletedHandler = this.handleReminderCompleted.bind(this);
   }
 
-  connectedCallback() {
+  async connectedCallback() {
     super.connectedCallback();
-    this.startReminderCheck();
+
+    // Request notification permission
+    await reminderService.requestNotificationPermission();
+
+    // Listen for reminder events
+    window.addEventListener('reminder-fired', this.boundReminderFiredHandler);
+    window.addEventListener('reminder-completed', this.boundReminderCompletedHandler);
+
+    // Load active reminders
+    await this.loadActiveReminders();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.checkInterval) {
-      clearInterval(this.checkInterval);
-    }
+    window.removeEventListener('reminder-fired', this.boundReminderFiredHandler);
+    window.removeEventListener('reminder-completed', this.boundReminderCompletedHandler);
   }
 
-  updated(changedProperties) {
+  async updated(changedProperties) {
     if (changedProperties.has('profile') && this.profile) {
-      this.generateReminders();
+      await this.scheduleTodaysReminders();
     }
   }
 
-  async generateReminders() {
+  /**
+   * Schedule today's medication reminders using service worker
+   */
+  async scheduleTodaysReminders() {
     if (!this.profile?.medications) {
       return;
     }
 
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-
-    // Generate reminders for medications scheduled today
-    for (const med of this.profile.medications) {
-      const scheduledTime = new Date(`${today}T${med.time}`);
-
-      // Only create if not already in database and is future
-      if (scheduledTime > now) {
-        const exists = await db.reminders
-          .where(['type', 'scheduledFor'])
-          .equals(['medication', scheduledTime])
-          .first();
-
-        if (!exists) {
-          await db.reminders.add({
-            type: 'medication',
-            scheduledFor: scheduledTime,
-            completed: false,
-            data: med
-          });
-        }
-      }
-    }
-
+    await reminderService.scheduleTodaysMedications(this.profile);
     await this.loadActiveReminders();
   }
 
+  /**
+   * Load active reminders from database
+   */
   async loadActiveReminders() {
-    const now = new Date();
-    const endOfDay = new Date(now);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    this.activeReminders = await db.reminders
-      .where('scheduledFor')
-      .between(now, endOfDay)
-      .and(reminder => !reminder.completed)
-      .sortBy('scheduledFor');
-
+    this.activeReminders = await reminderService.getActiveReminders();
     this.nextReminder = this.activeReminders[0] || null;
+    this.requestUpdate();
   }
 
-  startReminderCheck() {
-    // Check every minute
-    this.checkInterval = setInterval(() => {
-      this.loadActiveReminders();
-      this.checkDueReminders();
-    }, 60000);
-
-    // Initial check
+  /**
+   * Handle reminder fired event
+   */
+  handleReminderFired(event) {
+    console.log('[MedicationReminder] Reminder fired:', event.detail);
+    // Reload active reminders to update UI
     this.loadActiveReminders();
-    this.checkDueReminders();
   }
 
-  async checkDueReminders() {
-    const now = new Date();
-
-    for (const reminder of this.activeReminders) {
-      if (reminder.scheduledFor <= now && !reminder.notified) {
-        this.notifyReminder(reminder);
-        await db.reminders.update(reminder.id, { notified: true });
-      }
-    }
-  }
-
-  notifyReminder(reminder) {
-    const message = reminder.type === 'medication'
-      ? `Time for your medication: ${reminder.data.name}`
-      : `Reminder: ${reminder.data.message}`;
-
-    // Visual notification
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('ADAM Reminder', {
-        body: message,
-        icon: '/icons/icon-192.png'
-      });
-    }
-
-    // Audio notification (TTS)
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(message);
-      utterance.rate = 0.9;
-      speechSynthesis.speak(utterance);
-    }
+  /**
+   * Handle reminder completed event
+   */
+  handleReminderCompleted(event) {
+    console.log('[MedicationReminder] Reminder completed:', event.detail);
+    // Reload active reminders to update UI
+    this.loadActiveReminders();
   }
 
   async handleComplete(reminderId) {
+    // Mark as completed in database
     await completeReminder(reminderId);
+
+    // Cancel in service worker (if still active)
+    await reminderService.cancelReminder(reminderId);
+
+    // Reload UI
     await this.loadActiveReminders();
   }
 

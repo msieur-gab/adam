@@ -1,7 +1,10 @@
 import { LitElement, html, css } from 'lit';
 import { logConversation, getRecentConversations, getProfile } from '../services/db-service.js';
-import { conversationService } from '../services/conversation-service.js';
+// Use enhanced conversation service with compromise NLU
+import { enhancedConversationService as conversationService } from '../services/enhanced-conversation-service.js';
+// Fallback: import { conversationService } from '../services/conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
+import { ambientSoundPlugin } from '../plugins/ambient-sound-plugin.js';
 
 /**
  * Companion Chat Component
@@ -14,7 +17,9 @@ class CompanionChat extends LitElement {
     messages: { type: Array },
     processing: { type: Boolean },
     ttsLoading: { type: Boolean },
-    ttsProgress: { type: Object }
+    ttsProgress: { type: Object },
+    showNluDebug: { type: Boolean },
+    lastNluResult: { type: Object }
   };
 
   static styles = css`
@@ -154,6 +159,72 @@ class CompanionChat extends LitElement {
       font-size: 0.75rem;
       opacity: 0.9;
     }
+
+    .nlu-debug {
+      background: #f0f9ff;
+      border: 2px solid #0ea5e9;
+      border-radius: var(--radius);
+      padding: 1rem;
+      margin: 1rem 0;
+      font-family: 'Courier New', monospace;
+      font-size: 0.875rem;
+    }
+
+    .nlu-debug-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+      font-weight: bold;
+      color: #0369a1;
+    }
+
+    .nlu-debug-toggle {
+      background: #0ea5e9;
+      color: white;
+      border: none;
+      padding: 0.25rem 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+
+    .nlu-debug-content {
+      display: grid;
+      gap: 0.5rem;
+    }
+
+    .nlu-field {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .nlu-label {
+      font-weight: bold;
+      color: #0369a1;
+      min-width: 100px;
+    }
+
+    .nlu-value {
+      color: #334155;
+    }
+
+    .nlu-value.highlight {
+      background: #fef08a;
+      padding: 0 4px;
+      border-radius: 2px;
+    }
+
+    .nlu-nouns {
+      color: #059669;
+      font-weight: 500;
+    }
+
+    .nlu-scores {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-top: 0.25rem;
+    }
   `;
 
   constructor() {
@@ -164,9 +235,18 @@ class CompanionChat extends LitElement {
     this.ttsReady = false;
     this.ttsLoading = false;
     this.ttsProgress = { status: '', progress: 0, loaded: 0, total: 0 };
+    this.showNluDebug = true; // Show NLU debug by default for testing
+    this.lastNluResult = null;
 
-    // Bind handler once for proper cleanup (prevents memory leak)
+    // Bind handlers once for proper cleanup (prevents memory leak)
     this.boundVoiceInputHandler = this.handleVoiceInput.bind(this);
+    this.boundVoiceInterruptHandler = this.handleVoiceInterrupt.bind(this);
+
+    // Track pending TTS to prevent overlaps
+    this.pendingTTS = null;
+
+    // Track current request to prevent speaking outdated responses
+    this.currentRequestId = 0;
 
     // Limit message history to prevent unbounded growth
     this.maxMessages = 100; // Keep last 100 messages
@@ -184,6 +264,7 @@ class CompanionChat extends LitElement {
 
     // Listen for voice input from voice-input component
     window.addEventListener('voice-input', this.boundVoiceInputHandler);
+    window.addEventListener('voice-interrupt', this.boundVoiceInterruptHandler);
 
     // Initialize TTS service
     await this.initializeTTS();
@@ -227,12 +308,31 @@ class CompanionChat extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('voice-input', this.boundVoiceInputHandler);
+    window.removeEventListener('voice-interrupt', this.boundVoiceInterruptHandler);
 
     // Stop any ongoing TTS
     ttsService.stop();
 
+    // Cancel any pending TTS
+    if (this.pendingTTS) {
+      clearTimeout(this.pendingTTS);
+      this.pendingTTS = null;
+    }
+
     // Clear messages to free memory
     this.messages = [];
+  }
+
+  handleVoiceInterrupt(event) {
+    console.log('[CompanionChat] Voice interrupt received - cancelling pending TTS');
+
+    // Cancel any pending TTS that hasn't started yet
+    if (this.pendingTTS) {
+      clearTimeout(this.pendingTTS);
+      this.pendingTTS = null;
+    }
+
+    // TTS is already stopped by voice-input component
   }
 
   async handleVoiceInput(event) {
@@ -242,11 +342,23 @@ class CompanionChat extends LitElement {
       return;
     }
 
+    // Increment request ID to invalidate any pending responses
+    this.currentRequestId++;
+    const requestId = this.currentRequestId;
+    console.log(`[CompanionChat] New input request #${requestId}`);
+
+    // Cancel any pending TTS from previous input
+    if (this.pendingTTS) {
+      clearTimeout(this.pendingTTS);
+      this.pendingTTS = null;
+      console.log('[CompanionChat] Cancelled pending TTS for new input');
+    }
+
     // Add user message
     this.addUserMessage(transcript);
 
     // Process and respond
-    await this.processInput(transcript);
+    await this.processInput(transcript, requestId);
   }
 
   addUserMessage(text) {
@@ -269,7 +381,7 @@ class CompanionChat extends LitElement {
     });
   }
 
-  addCompanionMessage(text) {
+  addCompanionMessage(text, requestId = null) {
     this.messages = [
       ...this.messages,
       { text, type: 'companion', timestamp: new Date() }
@@ -288,18 +400,64 @@ class CompanionChat extends LitElement {
       }
     });
 
-    // Speak the response using TTS
-    this.speak(text);
+    // Speak the response using TTS (only if this is the current request)
+    this.speak(text, requestId);
   }
 
-  async processInput(input) {
+  async processInput(input, requestId = null) {
     this.processing = true;
 
     try {
-      // Use conversation service for intelligent rule-based responses
-      const response = await conversationService.generateResponse(input, this.profile);
-      this.addCompanionMessage(response);
-      await logConversation(input, response, 'rule-based');
+      // Check if request is still current before processing
+      if (requestId && requestId !== this.currentRequestId) {
+        console.log(`[CompanionChat] Request #${requestId} cancelled (current: #${this.currentRequestId})`);
+        return;
+      }
+
+      // Use enhanced conversation service with NLU
+      const result = await conversationService.generateResponse(input, this.profile);
+
+      // Check again after async operation
+      if (requestId && requestId !== this.currentRequestId) {
+        console.log(`[CompanionChat] Request #${requestId} cancelled after processing (current: #${this.currentRequestId})`);
+        return;
+      }
+
+      // Enhanced service returns {text, response, nlu}
+      const responseText = result.text || result;
+
+      // Check for stop intent
+      if (result.nlu && result.nlu.intent === 'stop_speaking') {
+        console.log('[CompanionChat] Stop intent detected - stopping TTS and ambient sound');
+        ttsService.stop();
+
+        // Also stop ambient sound if playing
+        if (ambientSoundPlugin.isCurrentlyPlaying()) {
+          await ambientSoundPlugin.stopSound();
+          this.addCompanionMessage("Okay, I've stopped everything.", requestId);
+        } else {
+          this.addCompanionMessage("Okay, I've stopped.", requestId);
+        }
+
+        await logConversation(input, "Stopped speaking", 'stop-intent');
+        return;
+      }
+
+      // Store NLU result for debug display
+      if (result.nlu) {
+        this.lastNluResult = result.nlu;
+        console.log('🧠 NLU Analysis:', {
+          subject: result.nlu.subject,
+          intent: result.nlu.intent,
+          confidence: result.nlu.confidence,
+          nouns: result.nlu._debug?.nouns
+        });
+      }
+
+      // Add response and speak it (pass requestId to check before speaking)
+      this.addCompanionMessage(responseText, requestId);
+
+      await logConversation(input, responseText, 'nlu-enhanced');
 
       // Reload profile in case it was updated (e.g., location was saved)
       const updatedProfile = await getProfile();
@@ -309,28 +467,73 @@ class CompanionChat extends LitElement {
       }
     } catch (error) {
       console.error('Failed to process input:', error);
-      this.addCompanionMessage("I'm sorry, I didn't quite catch that. Could you try again?");
+      this.addCompanionMessage("I'm sorry, I didn't quite catch that. Could you try again?", requestId);
     } finally {
       this.processing = false;
     }
   }
 
 
-  async speak(text) {
+  /**
+   * Split text into sentences for progressive TTS
+   * Reduces latency for long articles
+   */
+  splitIntoSentences(text) {
+    // Split on .?! followed by space or end of string
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+
+    // Clean up and filter empty sentences
+    return sentences
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+  }
+
+  async speak(text, requestId = null) {
     if (!this.ttsReady) {
       return;
     }
 
+    // Check if this request is still current before speaking
+    if (requestId && requestId !== this.currentRequestId) {
+      console.log(`[CompanionChat] Skipping TTS for outdated request #${requestId} (current: #${this.currentRequestId})`);
+      return;
+    }
+
+    // Split long text into sentences for progressive reading
+    const sentences = this.splitIntoSentences(text);
+    console.log(`[CompanionChat] Speaking ${sentences.length} sentences`);
+
     try {
-      await ttsService.speak(text, {
-        rate: 0.9,
-        pitch: 1.0,
-        volume: 1.0
-      });
+      // Speak each sentence one by one
+      for (let i = 0; i < sentences.length; i++) {
+        // Check if request is still current before each sentence
+        if (requestId && requestId !== this.currentRequestId) {
+          console.log(`[CompanionChat] Stopping TTS - request #${requestId} superseded by #${this.currentRequestId}`);
+          break;
+        }
+
+        const sentence = sentences[i];
+        console.log(`[CompanionChat] Speaking sentence ${i + 1}/${sentences.length}: "${sentence.substring(0, 50)}..."`);
+
+        await ttsService.speak(sentence, {
+          rate: 0.9,
+          pitch: 1.0,
+          volume: 1.0
+        });
+
+        // Very brief pause between sentences for natural flow
+        if (i < sentences.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+
+      console.log('[CompanionChat] Finished speaking all sentences');
     } catch (error) {
       // Ignore interrupted errors - they're expected
       if (error !== 'interrupted') {
         console.error('Speech error:', error);
+      } else {
+        console.log('[CompanionChat] Speech interrupted by user');
       }
     }
   }
@@ -382,6 +585,54 @@ class CompanionChat extends LitElement {
 
     return html`
       <div class="chat-container">
+        ${this.showNluDebug && this.lastNluResult ? html`
+          <div class="nlu-debug">
+            <div class="nlu-debug-header">
+              <span>🧠 NLU Analysis (Compromise)</span>
+              <button class="nlu-debug-toggle" @click=${() => this.showNluDebug = false}>
+                Hide
+              </button>
+            </div>
+            <div class="nlu-debug-content">
+              <div class="nlu-field">
+                <span class="nlu-label">Input:</span>
+                <span class="nlu-value">"${this.lastNluResult.originalInput}"</span>
+              </div>
+              <div class="nlu-field">
+                <span class="nlu-label">Subject:</span>
+                <span class="nlu-value highlight">${this.lastNluResult.subject}</span>
+              </div>
+              <div class="nlu-field">
+                <span class="nlu-label">Intent:</span>
+                <span class="nlu-value highlight">${this.lastNluResult.intent}</span>
+              </div>
+              <div class="nlu-field">
+                <span class="nlu-label">Action:</span>
+                <span class="nlu-value">${this.lastNluResult.action}</span>
+              </div>
+              <div class="nlu-field">
+                <span class="nlu-label">Confidence:</span>
+                <span class="nlu-value">${(this.lastNluResult.confidence * 100).toFixed(1)}%</span>
+              </div>
+              ${this.lastNluResult._debug?.nouns?.length > 0 ? html`
+                <div class="nlu-field">
+                  <span class="nlu-label">Nouns found:</span>
+                  <span class="nlu-value nlu-nouns">[${this.lastNluResult._debug.nouns.join(', ')}]</span>
+                </div>
+              ` : ''}
+              ${this.lastNluResult._debug?.subjects_scored ? html`
+                <div class="nlu-scores">
+                  Scores: ${JSON.stringify(this.lastNluResult._debug.subjects_scored, null, 0)}
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        ` : !this.showNluDebug ? html`
+          <button class="nlu-debug-toggle" @click=${() => this.showNluDebug = true} style="margin: 1rem;">
+            Show NLU Debug
+          </button>
+        ` : ''}
+
         <div class="messages">
           ${this.messages.map(msg => html`
             <div class="message ${msg.type}">

@@ -13,6 +13,38 @@ export default defineConfig({
         { src: 'node_modules/piper-tts-web/dist/worker', dest: '.' },
       ]
     }),
+    // RSS Proxy Plugin (for development - bypasses CORS)
+    {
+      name: 'rss-proxy',
+      configureServer(server) {
+        server.middlewares.use(async (req, res, next) => {
+          if (req.url?.startsWith('/api/rss?')) {
+            const url = new URL(req.url, 'http://localhost');
+            const feedUrl = url.searchParams.get('url');
+
+            if (!feedUrl) {
+              res.statusCode = 400;
+              res.end('Missing url parameter');
+              return;
+            }
+
+            try {
+              const response = await fetch(feedUrl);
+              const text = await response.text();
+
+              res.setHeader('Content-Type', 'application/xml');
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.end(text);
+            } catch (error) {
+              res.statusCode = 500;
+              res.end(`Failed to fetch RSS feed: ${error.message}`);
+            }
+          } else {
+            next();
+          }
+        });
+      }
+    }
   ],
 
   build: {

@@ -3,7 +3,9 @@
  * Uses NLU for intent understanding and structured response generation
  */
 
-import { nluService } from './nlu-service.js';
+// Use compromise-enhanced NLU for better intent understanding
+import { compromiseNluService as nluService } from './compromise-nlu-service.js';
+// Fallback to original: import { nluService } from './nlu-service.js';
 import { responseGenerator } from './response-generator.js';
 import { getUserProfile } from './db-service.js';
 
@@ -35,9 +37,17 @@ export class EnhancedConversationService {
       const nluResult = await nluService.analyze(userInput, this.conversationContext);
 
       console.log('[EnhancedConversation] NLU Analysis:', {
+        // Multi-dimensional understanding
+        action: nluResult.action,
+        subject: nluResult.subject,
+        questionType: nluResult.questionType,
+        questionAspect: nluResult.questionAspect,
+
+        // Legacy intent (for backward compatibility)
         intent: nluResult.intent,
         confidence: nluResult.confidence,
-        questionType: nluResult.questionType,
+
+        // Entities and temporal
         entities: nluResult.entities,
         temporal: nluResult.temporal
       });

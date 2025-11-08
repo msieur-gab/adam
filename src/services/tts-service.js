@@ -21,6 +21,8 @@ class TTSService {
 
     // Playback control
     this.currentAudio = null; // Track current HTML Audio element for Piper
+    this.isSpeaking = false; // Track if currently speaking
+    this.shouldStop = false; // Flag to interrupt ongoing generation
   }
 
   /**
@@ -340,17 +342,35 @@ class TTSService {
    */
   async speakPiper(text, { voice = null, rate = 0.9 }) {
     try {
+      // Reset stop flag at start of new speech
+      this.shouldStop = false;
+      this.isSpeaking = true;
+
       const startTime = performance.now();
       console.log('🎤 Generating speech with Piper:', text.substring(0, 50) + '...');
 
       const selectedVoice = voice || this.piperVoice;
       const speakerId = 0; // Default speaker
 
+      // Check if we should stop before generation
+      if (this.shouldStop) {
+        console.log('🛑 TTS interrupted before generation');
+        this.isSpeaking = false;
+        throw new Error('interrupted');
+      }
+
       // Generate audio
       const genStart = performance.now();
       const result = await this.piperEngine.generate(text, selectedVoice, speakerId);
       const genTime = performance.now() - genStart;
       console.log(`🔄 Generated Piper audio in ${genTime.toFixed(0)}ms`);
+
+      // Check if we should stop after generation
+      if (this.shouldStop) {
+        console.log('🛑 TTS interrupted after generation');
+        this.isSpeaking = false;
+        throw new Error('interrupted');
+      }
 
       if (!result || !result.file) {
         throw new Error('Piper generated no audio file');
@@ -365,10 +385,19 @@ class TTSService {
       await this.playAudioBlob(audioBlob);
       const playTime = performance.now() - playStart;
 
+      this.isSpeaking = false;
+
       const totalTime = performance.now() - startTime;
       console.log(`✅ Total Piper TTS time: ${totalTime.toFixed(0)}ms (gen: ${genTime.toFixed(0)}ms, play: ${playTime.toFixed(0)}ms)`);
 
     } catch (error) {
+      this.isSpeaking = false;
+
+      // If interrupted, don't fall back - just throw the error
+      if (error.message === 'interrupted') {
+        throw error;
+      }
+
       console.error('Failed to generate Piper speech:', error);
       console.log('Falling back to browser TTS');
       return this.speakBrowser(text, { rate: 0.9, pitch: 1.0, volume: 1.0 });
@@ -389,7 +418,20 @@ class TTSService {
       // Track current audio for stop functionality
       this.currentAudio = audio;
 
+      // Check for stop during playback
+      const stopCheckInterval = setInterval(() => {
+        if (this.shouldStop) {
+          clearInterval(stopCheckInterval);
+          audio.pause();
+          URL.revokeObjectURL(url);
+          this.currentAudio = null;
+          console.log('🛑 Audio playback interrupted');
+          reject(new Error('interrupted'));
+        }
+      }, 100); // Check every 100ms
+
       audio.onended = () => {
+        clearInterval(stopCheckInterval);
         URL.revokeObjectURL(url);
         this.currentAudio = null;
         console.log('✅ Audio playback completed');
@@ -397,6 +439,7 @@ class TTSService {
       };
 
       audio.onerror = (error) => {
+        clearInterval(stopCheckInterval);
         URL.revokeObjectURL(url);
         this.currentAudio = null;
         console.error('❌ Audio playback error:', error);
@@ -404,7 +447,10 @@ class TTSService {
       };
 
       // Start playback
-      audio.play().catch(reject);
+      audio.play().catch((err) => {
+        clearInterval(stopCheckInterval);
+        reject(err);
+      });
     });
   }
 
@@ -440,11 +486,18 @@ class TTSService {
    * Stop any ongoing speech
    */
   stop() {
+    console.log('🛑 TTS stop() called');
+
+    // Set flag to interrupt ongoing generation
+    this.shouldStop = true;
+    this.isSpeaking = false;
+
     if (this.provider === 'browser') {
       speechSynthesis.cancel();
     } else if (this.provider === 'piper' && this.currentAudio) {
       try {
         this.currentAudio.pause();
+        this.currentAudio.currentTime = 0;
         this.currentAudio = null;
         console.log('🛑 Piper audio playback stopped');
       } catch (error) {
