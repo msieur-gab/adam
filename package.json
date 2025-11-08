@@ -18,5 +18,10 @@
   "devDependencies": {
     "vite": "^5.0.0",
     "vite-plugin-static-copy": "^1.0.0"
+  },
+  "overrides": {
+    "sharp": {
+      "optional": true
+    }
   }
 }
