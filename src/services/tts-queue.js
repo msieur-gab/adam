@@ -32,6 +32,11 @@ export class TTSQueue {
     this.onProgress = null; // (current, total) => void
     this.onComplete = null; // () => void
     this.onError = null; // (error) => void
+
+    // Promise resolution for async waiting
+    this.completionResolve = null;
+    this.completionReject = null;
+    this.completionPromise = null;
   }
 
   /**
@@ -82,8 +87,22 @@ export class TTSQueue {
 
     console.log(`📝 [TTSQueue] Processing ${this.sentences.length} sentences`);
 
+    // Create completion promise
+    this.completionPromise = new Promise((resolve, reject) => {
+      this.completionResolve = resolve;
+      this.completionReject = reject;
+    });
+
     // Initialize Web Audio API
-    await this.initAudioContext();
+    try {
+      await this.initAudioContext();
+    } catch (error) {
+      console.error('❌ [TTSQueue] Failed to initialize audio context:', error);
+      if (this.completionReject) {
+        this.completionReject(error);
+      }
+      throw error;
+    }
 
     // Start synthesis pipeline: kick off first N sentences
     const initialBatch = Math.min(this.lookaheadCount, this.sentences.length);
@@ -95,6 +114,9 @@ export class TTSQueue {
 
     // Start playback (will play as soon as first sentence is ready)
     this.playNext();
+
+    // Wait for all sentences to complete
+    return this.completionPromise;
   }
 
   /**
@@ -174,6 +196,11 @@ export class TTSQueue {
     if (this.isStopped) {
       console.log('🛑 [TTSQueue] Playback stopped');
       this.isPlaying = false;
+      if (this.completionReject) {
+        this.completionReject(new Error('stopped'));
+        this.completionResolve = null;
+        this.completionReject = null;
+      }
       return;
     }
 
@@ -199,6 +226,11 @@ export class TTSQueue {
         this.isPlaying = false;
         if (this.onComplete) {
           this.onComplete();
+        }
+        if (this.completionResolve) {
+          this.completionResolve();
+          this.completionResolve = null;
+          this.completionReject = null;
         }
         return;
       }
@@ -237,6 +269,11 @@ export class TTSQueue {
         console.error('❌ [TTSQueue] Playback error:', error);
         if (this.onError) {
           this.onError(error);
+        }
+        if (this.completionReject) {
+          this.completionReject(error);
+          this.completionResolve = null;
+          this.completionReject = null;
         }
       }
       this.isPlaying = false;
@@ -296,6 +333,14 @@ export class TTSQueue {
 
     // Clear queue and synthesis tracking
     this.queue = [];
+
+    // Reject completion promise if pending
+    if (this.completionReject) {
+      this.completionReject(new Error('stopped'));
+      this.completionResolve = null;
+      this.completionReject = null;
+    }
+
     // Note: We can't cancel ongoing synthesis promises, but isStopped flag will prevent them from being used
   }
 
