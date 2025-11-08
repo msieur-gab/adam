@@ -1,8 +1,10 @@
 import { PiperWebEngine, OnnxWebGPURuntime, PiperWebWorkerEngine, OnnxWebGPUWorkerRuntime, HuggingFaceVoiceProvider } from 'piper-tts-web';
+import { TTSQueue } from './tts-queue.js';
 
 /**
  * TTS Service for ADAM
  * Supports multiple TTS backends: Piper (primary), Browser TTS (fallback)
+ * Now with asynchronous sentence queuing for seamless audio playback
  */
 
 class TTSService {
@@ -23,6 +25,10 @@ class TTSService {
     this.currentAudio = null; // Track current HTML Audio element for Piper
     this.isSpeaking = false; // Track if currently speaking
     this.shouldStop = false; // Flag to interrupt ongoing generation
+
+    // Async queue for overlapping synthesis and playback
+    this.ttsQueue = null;
+    this.useAsyncQueue = true; // Enable async queue by default
   }
 
   /**
@@ -312,15 +318,27 @@ class TTSService {
 
   /**
    * Speak text using the selected provider
+   * Now supports async queue mode for seamless multi-sentence playback
    */
   async speak(text, options = {}) {
     const {
       rate = 0.9,  // Slightly slower for elderly users
       pitch = 1.0,
       volume = 1.0,
-      voice = null
+      voice = null,
+      useQueue = this.useAsyncQueue // Use async queue by default
     } = options;
 
+    // If using async queue and text has multiple sentences, use queue mode
+    if (useQueue && this.provider === 'piper' && this.piperReady) {
+      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      if (sentences.length > 1) {
+        console.log('🎵 [TTSService] Using async queue for multi-sentence playback');
+        return this.speakWithQueue(text, { voice, rate });
+      }
+    }
+
+    // Otherwise, use traditional single-sentence mode
     switch (this.provider) {
       case 'piper':
         if (this.piperReady) {
@@ -333,6 +351,73 @@ class TTSService {
         return this.speakBrowser(text, { rate, pitch, volume });
       default:
         return this.speakBrowser(text, { rate, pitch, volume });
+    }
+  }
+
+  /**
+   * Speak using async queue with overlapping synthesis and playback
+   */
+  async speakWithQueue(text, { voice = null, rate = 0.9 } = {}) {
+    console.log('🎵 [TTSService] Starting async queued speech');
+
+    // Stop any existing queue
+    if (this.ttsQueue) {
+      this.ttsQueue.stop();
+    }
+
+    // Create synthesis function for queue
+    const synthesizeFunc = async (sentence) => {
+      return await this.generatePiperAudio(sentence, { voice, rate });
+    };
+
+    // Create new queue
+    this.ttsQueue = new TTSQueue(synthesizeFunc);
+
+    // Set up callbacks
+    this.ttsQueue.onProgress = (current, total) => {
+      console.log(`📊 [TTSService] Progress: ${current}/${total}`);
+    };
+
+    this.ttsQueue.onComplete = () => {
+      console.log('✅ [TTSService] Async queue completed');
+      this.isSpeaking = false;
+    };
+
+    this.ttsQueue.onError = (error) => {
+      console.error('❌ [TTSService] Queue error:', error);
+      this.isSpeaking = false;
+    };
+
+    // Start speaking
+    this.isSpeaking = true;
+    await this.ttsQueue.speak(text);
+  }
+
+  /**
+   * Generate Piper audio and return blob (without playing)
+   * Used by async queue for synthesis-only operations
+   */
+  async generatePiperAudio(text, { voice = null, rate = 0.9 } = {}) {
+    try {
+      const selectedVoice = voice || this.piperVoice;
+      const speakerId = 0;
+
+      console.log(`🎤 [TTSService] Generating audio: "${text.substring(0, 40)}..."`);
+      const startTime = performance.now();
+
+      const result = await this.piperEngine.generate(text, selectedVoice, speakerId);
+
+      const elapsed = performance.now() - startTime;
+      console.log(`✅ [TTSService] Audio generated in ${elapsed.toFixed(0)}ms`);
+
+      if (!result || !result.file) {
+        throw new Error('Piper generated no audio file');
+      }
+
+      return result.file; // Return the blob
+    } catch (error) {
+      console.error('❌ [TTSService] Failed to generate Piper audio:', error);
+      throw error;
     }
   }
 
@@ -492,6 +577,11 @@ class TTSService {
     this.shouldStop = true;
     this.isSpeaking = false;
 
+    // Stop async queue if active
+    if (this.ttsQueue) {
+      this.ttsQueue.stop();
+    }
+
     if (this.provider === 'browser') {
       speechSynthesis.cancel();
     } else if (this.provider === 'piper' && this.currentAudio) {
@@ -618,6 +708,34 @@ if (typeof window !== 'undefined') {
   window.ttsService = ttsService;
   window.checkMemory = () => ttsService.logMemoryStats();
 
+  // Async queue debugging
+  window.enableAsyncQueue = () => {
+    ttsService.useAsyncQueue = true;
+    console.log('✅ Async queue enabled');
+  };
+
+  window.disableAsyncQueue = () => {
+    ttsService.useAsyncQueue = false;
+    console.log('⚠️  Async queue disabled (using legacy mode)');
+  };
+
+  window.queueStatus = () => {
+    if (!ttsService.ttsQueue) {
+      console.log('No active queue');
+      return;
+    }
+    const progress = ttsService.ttsQueue.getProgress();
+    console.log('🎵 Queue Status:');
+    console.table({
+      current: progress.current,
+      total: progress.total,
+      percentage: `${progress.percentage.toFixed(1)}%`,
+      isPlaying: ttsService.ttsQueue.isSpeaking(),
+      queueLength: ttsService.ttsQueue.queue.length,
+      synthesizing: ttsService.ttsQueue.synthesisInProgress.size
+    });
+  };
+
   // Helper to list available Piper voices
   window.listVoices = async () => {
     if (!ttsService.piperAvailableVoices || ttsService.piperAvailableVoices.length === 0) {
@@ -703,4 +821,9 @@ if (typeof window !== 'undefined') {
   console.log('  testVoice("voice_id")  - Test a specific voice');
   console.log('  setVoice("voice_id")   - Change current voice');
   console.log('  checkMemory()          - Show memory usage');
+  console.log('');
+  console.log('🎵 Async Queue Commands:');
+  console.log('  enableAsyncQueue()     - Enable async sentence queue (default)');
+  console.log('  disableAsyncQueue()    - Use legacy mode (no overlap)');
+  console.log('  queueStatus()          - Show current queue status');
 }

@@ -499,38 +499,25 @@ class CompanionChat extends LitElement {
       return;
     }
 
-    // Split long text into sentences for progressive reading
-    const sentences = this.splitIntoSentences(text);
-    console.log(`[CompanionChat] Speaking ${sentences.length} sentences`);
+    console.log(`[CompanionChat] Speaking text with async queue (${text.length} chars)`);
 
     try {
-      // Speak each sentence one by one
-      for (let i = 0; i < sentences.length; i++) {
-        // Check if request is still current before each sentence
-        if (requestId && requestId !== this.currentRequestId) {
-          console.log(`[CompanionChat] Stopping TTS - request #${requestId} superseded by #${this.currentRequestId}`);
-          break;
-        }
+      // The TTS service now automatically handles:
+      // - Sentence splitting
+      // - Async synthesis pipeline (2-3 sentences ahead)
+      // - Seamless playback overlap using Web Audio API
+      // - No gaps between sentences
+      await ttsService.speak(text, {
+        rate: 0.9,
+        pitch: 1.0,
+        volume: 1.0,
+        useQueue: true // Enable async queue mode
+      });
 
-        const sentence = sentences[i];
-        console.log(`[CompanionChat] Speaking sentence ${i + 1}/${sentences.length}: "${sentence.substring(0, 50)}..."`);
-
-        await ttsService.speak(sentence, {
-          rate: 0.9,
-          pitch: 1.0,
-          volume: 1.0
-        });
-
-        // Very brief pause between sentences for natural flow
-        if (i < sentences.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-        }
-      }
-
-      console.log('[CompanionChat] Finished speaking all sentences');
+      console.log('[CompanionChat] Finished speaking');
     } catch (error) {
       // Ignore interrupted errors - they're expected
-      if (error !== 'interrupted') {
+      if (error !== 'interrupted' && error.message !== 'stopped') {
         console.error('Speech error:', error);
       } else {
         console.log('[CompanionChat] Speech interrupted by user');
