@@ -10,11 +10,11 @@
 
 import { BasePlugin } from './plugin-base.js';
 
-export class NewsPluginV2 extends BasePlugin {
+export class NewsPlugin extends BasePlugin {
   constructor() {
     super({
-      id: 'news-v2',
-      name: 'News v2',
+      id: 'news',
+      name: 'News',
       version: '2.0.0',
       description: 'Reads news from RSS feeds with intelligent conversation',
       author: 'ADAM Team'
@@ -402,5 +402,5 @@ export class NewsPluginV2 extends BasePlugin {
 }
 
 // Export singleton instance
-export const newsPluginV2 = new NewsPluginV2();
-export default NewsPluginV2;
+export const newsPlugin = new NewsPlugin();
+export default NewsPlugin;

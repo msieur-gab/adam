@@ -18,11 +18,11 @@
 import { BasePlugin } from './plugin-base.js';
 import { reminderService } from '../services/reminder-service.js';
 
-export class ReminderPluginV2 extends BasePlugin {
+export class ReminderPlugin extends BasePlugin {
   constructor() {
     super({
-      id: 'reminder-v2',
-      name: 'Reminder v2',
+      id: 'reminder',
+      name: 'Reminder',
       version: '2.0.0',
       description: 'Multi-turn reminder creation with intelligent parameter collection',
       author: 'ADAM Team'
@@ -684,5 +684,5 @@ export class ReminderPluginV2 extends BasePlugin {
 }
 
 // Export singleton instance
-export const reminderPluginV2 = new ReminderPluginV2();
-export default ReminderPluginV2;
+export const reminderPlugin = new ReminderPlugin();
+export default ReminderPlugin;

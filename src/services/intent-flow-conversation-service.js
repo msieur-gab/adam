@@ -12,9 +12,9 @@
 import { IntentFlowEngine } from './intent-flow-engine.js';
 import { TimePlugin } from '../plugins/time-plugin.js';
 import { WeatherPlugin } from '../plugins/weather-plugin.js';
-import { ReminderPluginV2 } from '../plugins/reminder-plugin-v2.js';
-import { NewsPluginV2 } from '../plugins/news-plugin-v2.js';
-import { AmbientSoundPluginV2 } from '../plugins/ambient-sound-plugin-v2.js';
+import { ReminderPlugin } from '../plugins/reminder-plugin.js';
+import { NewsPlugin } from '../plugins/news-plugin.js';
+import { AmbientSoundPlugin } from '../plugins/ambient-sound-plugin.js';
 
 export class IntentFlowConversationService {
   constructor() {
@@ -33,9 +33,9 @@ export class IntentFlowConversationService {
     // Create plugin instances
     const timePlugin = new TimePlugin();
     const weatherPlugin = new WeatherPlugin();
-    const reminderPlugin = new ReminderPluginV2();
-    const newsPlugin = new NewsPluginV2();
-    const ambientSoundPlugin = new AmbientSoundPluginV2();
+    const reminderPlugin = new ReminderPlugin();
+    const newsPlugin = new NewsPlugin();
+    const ambientSoundPlugin = new AmbientSoundPlugin();
 
     // Initialize plugins
     await Promise.all([

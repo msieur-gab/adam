@@ -13,11 +13,11 @@ import { BasePlugin } from './plugin-base.js';
 import { ttsService } from '../services/tts-service.js';
 import { playbackController, PlaybackPriority } from '../services/playback-controller.js';
 
-export class AmbientSoundPluginV2 extends BasePlugin {
+export class AmbientSoundPlugin extends BasePlugin {
   constructor() {
     super({
-      id: 'ambient-sound-v2',
-      name: 'Ambient Sound v2',
+      id: 'ambient-sound',
+      name: 'Ambient Sound',
       version: '2.0.0',
       description: 'Plays relaxing ambient sounds with timer and auto-duck',
       author: 'ADAM Team'
@@ -586,5 +586,5 @@ export class AmbientSoundPluginV2 extends BasePlugin {
 }
 
 // Export singleton instance
-export const ambientSoundPluginV2 = new AmbientSoundPluginV2();
-export default AmbientSoundPluginV2;
+export const ambientSoundPlugin = new AmbientSoundPlugin();
+export default AmbientSoundPlugin;
