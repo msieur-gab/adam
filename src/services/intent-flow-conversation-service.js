@@ -13,6 +13,7 @@ import { IntentFlowEngine } from './intent-flow-engine.js';
 import { TimePlugin } from '../plugins/time-plugin.js';
 import { WeatherPlugin } from '../plugins/weather-plugin.js';
 import { ReminderPluginV2 } from '../plugins/reminder-plugin-v2.js';
+import { NewsPluginV2 } from '../plugins/news-plugin-v2.js';
 
 export class IntentFlowConversationService {
   constructor() {
@@ -32,18 +33,21 @@ export class IntentFlowConversationService {
     const timePlugin = new TimePlugin();
     const weatherPlugin = new WeatherPlugin();
     const reminderPlugin = new ReminderPluginV2();
+    const newsPlugin = new NewsPluginV2();
 
     // Initialize plugins
     await Promise.all([
       timePlugin.initialize(),
       weatherPlugin.initialize(),
-      reminderPlugin.initialize()
+      reminderPlugin.initialize(),
+      newsPlugin.initialize()
     ]);
 
     // Register with engine
     this.engine.registerPlugin(timePlugin);
     this.engine.registerPlugin(weatherPlugin);
     this.engine.registerPlugin(reminderPlugin);
+    this.engine.registerPlugin(newsPlugin);
 
     this.initialized = true;
     console.log('[IntentFlowConversation] Initialized with plugins:', this.engine.getRegisteredIntents());
