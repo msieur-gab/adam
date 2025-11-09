@@ -126,6 +126,44 @@ export class BasePlugin {
   isCompatible(systemVersion) {
     return true;
   }
+
+  // ============================================================================
+  // PlaybackController Interface
+  // These methods are required for plugins that register with PlaybackController
+  // Plugins should override these if they manage audio/media playback
+  // ============================================================================
+
+  /**
+   * Check if plugin is currently playing audio/media
+   * @returns {boolean} True if playing
+   */
+  isPlaying() {
+    return false;
+  }
+
+  /**
+   * Stop playback
+   * @returns {Promise<void>}
+   */
+  async stop() {
+    // Override in plugin if needed
+  }
+
+  /**
+   * Pause playback
+   * @returns {Promise<void>}
+   */
+  async pause() {
+    // Override in plugin if needed
+  }
+
+  /**
+   * Resume playback
+   * @returns {Promise<void>}
+   */
+  async resume() {
+    // Override in plugin if needed
+  }
 }
 
 export default BasePlugin;

@@ -54,7 +54,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
 
     // Playback state
     this.audioPlayer = null;
-    this.isPlaying = false;
+    this.playing = false;  // Internal state (renamed to avoid conflict with isPlaying() method)
     this.currentSound = null;
     this.originalVolume = 0.3; // Default 30% volume
     this.duckedVolume = 0.05;  // 5% during speech
@@ -236,7 +236,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
         // Fulfillment
         fulfill: async (params) => {
           try {
-            if (!this.isPlaying) {
+            if (!this.playing) {
               return {
                 text: 'No ambient sound is currently playing',
                 data: { wasPlaying: false }
@@ -347,7 +347,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
 
     try {
       // Stop current sound if playing
-      if (this.isPlaying) {
+      if (this.playing) {
         await this.stopSound();
       }
 
@@ -357,7 +357,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
       this.currentSound = soundName;
 
       await this.audioPlayer.play();
-      this.isPlaying = true;
+      this.playing = true;
 
       // Notify playback controller
       playbackController.setPlaying('ambient-sound');
@@ -380,7 +380,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
       this.audioPlayer.currentTime = 0;
     }
 
-    this.isPlaying = false;
+    this.playing = false;
     this.currentSound = null;
 
     // Cancel any active timer (service worker or local)
@@ -499,7 +499,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
    * @private
    */
   handleTTSStart() {
-    if (this.isPlaying && this.audioPlayer) {
+    if (this.playing && this.audioPlayer) {
       this.audioPlayer.volume = this.duckedVolume;
       this.isDucked = true;
       console.log('[AmbientSoundV2] Ducked volume for TTS');
@@ -511,19 +511,54 @@ export class AmbientSoundPluginV2 extends BasePlugin {
    * @private
    */
   handleTTSEnd() {
-    if (this.isPlaying && this.audioPlayer) {
+    if (this.playing && this.audioPlayer) {
       this.audioPlayer.volume = this.originalVolume;
       this.isDucked = false;
       console.log('[AmbientSoundV2] Restored volume after TTS');
     }
   }
 
+  // ============================================================================
+  // PlaybackController Interface Overrides
+  // ============================================================================
+
   /**
-   * Check if currently playing
+   * Check if currently playing (required by PlaybackController)
    */
-  isCurrentlyPlaying() {
-    return this.isPlaying;
+  isPlaying() {
+    return this.playing;
   }
+
+  /**
+   * Stop playback (required by PlaybackController)
+   */
+  async stop() {
+    return this.stopSound();
+  }
+
+  /**
+   * Pause playback (for PlaybackController)
+   */
+  async pause() {
+    if (this.audioPlayer && this.playing) {
+      this.audioPlayer.pause();
+      console.log('[AmbientSoundV2] Paused');
+    }
+  }
+
+  /**
+   * Resume playback (for PlaybackController)
+   */
+  async resume() {
+    if (this.audioPlayer && this.currentSound) {
+      this.audioPlayer.play();
+      console.log('[AmbientSoundV2] Resumed');
+    }
+  }
+
+  // ============================================================================
+  // Public API
+  // ============================================================================
 
   /**
    * Get current sound info
@@ -534,7 +569,7 @@ export class AmbientSoundPluginV2 extends BasePlugin {
     return {
       name: this.sounds[this.currentSound].name,
       key: this.currentSound,
-      isPlaying: this.isPlaying
+      isPlaying: this.playing
     };
   }
 
