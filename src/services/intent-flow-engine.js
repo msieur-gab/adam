@@ -102,15 +102,31 @@ export class IntentFlowEngine {
       return await this.handleParameterCollection(userInput, signals);
     }
 
-    // 3. Check for follow-up modifiers (uses context)
-    const followUp = this.checkFollowUps(userInput, signals);
-    if (followUp) {
-      return await this.executeFollowUp(followUp, userInput, signals);
-    }
-
-    // 4. Score all registered intents
+    // 3. Score all registered intents
     const scoredIntents = this.scoreAllIntents(signals);
 
+    // 4. Check for follow-up modifiers (uses context)
+    const followUp = this.checkFollowUps(userInput, signals);
+
+    // 5. Decide: Follow-up or Primary Intent?
+    // Follow-ups should only be used when they're more confident than primary intent
+    // OR when the query is clearly a modification (short, lacks primary signals)
+    if (followUp) {
+      const bestPrimaryIntent = scoredIntents[0];
+
+      // If there's a strong primary intent match, prefer it over follow-up
+      if (bestPrimaryIntent && bestPrimaryIntent.confidence >= this.thresholds.HIGH) {
+        console.log(`[IntentFlowEngine] Primary intent (${bestPrimaryIntent.confidence.toFixed(2)}) stronger than follow-up - using primary`);
+        // Continue with primary intent
+      } else if (followUp.confidence > (bestPrimaryIntent?.confidence || 0)) {
+        // Follow-up is more confident
+        return await this.executeFollowUp(followUp, userInput, signals);
+      } else {
+        console.log(`[IntentFlowEngine] Follow-up detected but primary intent stronger - using primary`);
+      }
+    }
+
+    // 6. Handle primary intent scoring
     if (scoredIntents.length === 0) {
       console.log('[IntentFlowEngine] No intents matched');
       return this.fallback(userInput, signals);
@@ -124,7 +140,7 @@ export class IntentFlowEngine {
       second: secondBest ? { intent: secondBest.intent, confidence: secondBest.confidence } : null
     });
 
-    // 5. Route based on confidence
+    // 7. Route based on confidence
     return await this.routeByConfidence(bestIntent, secondBest, userInput, signals);
   }
 
@@ -139,6 +155,9 @@ export class IntentFlowEngine {
       return null; // No active contexts, can't be a follow-up
     }
 
+    let bestFollowUp = null;
+    let bestConfidence = 0;
+
     // Check each active context for matching follow-up handlers
     for (const contextName of activeContexts) {
       for (const [intentName, { flow }] of this.intentFlows) {
@@ -148,28 +167,78 @@ export class IntentFlowEngine {
           // Check if this follow-up requires the active context
           if (followUpDef.requiresContext !== contextName) continue;
 
-          // Check if input matches triggers
-          const matchesTrigger = this.matchesFollowUpTriggers(
+          // Calculate follow-up confidence
+          const confidence = this.scoreFollowUp(
             userInput,
             signals,
-            followUpDef.triggers
+            followUpDef,
+            flow
           );
 
-          if (matchesTrigger) {
-            console.log(`[IntentFlowEngine] Detected follow-up: ${followUpName} (context: ${contextName})`);
-
-            return {
+          if (confidence > bestConfidence) {
+            bestConfidence = confidence;
+            bestFollowUp = {
               originalIntent: intentName,
               followUpName,
               followUpDef,
-              contextData: this.context.get(contextName)
+              contextData: this.context.get(contextName),
+              confidence
             };
           }
         }
       }
     }
 
-    return null;
+    if (bestFollowUp) {
+      console.log(`[IntentFlowEngine] Detected follow-up: ${bestFollowUp.followUpName} (confidence: ${bestConfidence.toFixed(2)})`);
+    }
+
+    return bestFollowUp;
+  }
+
+  /**
+   * Score a follow-up query
+   * Follow-ups should be short modifications that lack the primary intent's required signals
+   * @private
+   */
+  scoreFollowUp(userInput, signals, followUpDef, parentFlow) {
+    let score = 0;
+
+    // Check if input matches triggers
+    const matchesTrigger = this.matchesFollowUpTriggers(
+      userInput,
+      signals,
+      followUpDef.triggers
+    );
+
+    if (!matchesTrigger) {
+      return 0; // No trigger match
+    }
+
+    // Base score for trigger match
+    score = 0.4;
+
+    // Boost for short queries (follow-ups are typically brief)
+    const wordCount = signals.wordCount;
+    if (wordCount <= 3) {
+      score += 0.3; // "And tomorrow?" = very likely follow-up
+    } else if (wordCount <= 5) {
+      score += 0.15; // "What about Paris?" = likely follow-up
+    }
+
+    // Penalty for having primary intent's required signals
+    // If the query has all the signals for a fresh primary intent, it's probably not a follow-up
+    if (parentFlow.scoringRules?.required) {
+      const hasRequiredSignals = parentFlow.scoringRules.required.some(rule =>
+        this.matchesRule(rule, signals)
+      );
+
+      if (hasRequiredSignals) {
+        score -= 0.3; // "What's the weather in Paris?" has "weather" noun = probably primary intent
+      }
+    }
+
+    return Math.max(0, Math.min(1, score));
   }
 
   /**

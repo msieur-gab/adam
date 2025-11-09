@@ -289,7 +289,7 @@ export class EnhancedNLUService {
     return doc
       .places()
       .out('array')
-      .map(p => p.toLowerCase());
+      .map(p => p.toLowerCase().replace(/[?.!,;:]/g, ''));  // Remove punctuation
   }
 
   /**

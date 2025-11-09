@@ -2,7 +2,7 @@
 
 ## What We Built
 
-A complete Dialogflow-style intent architecture for ADAM, demonstrated with a working TimePlugin pilot.
+A complete Dialogflow-style intent architecture for ADAM, demonstrated with working TimePlugin and WeatherPlugin pilots.
 
 ## Core Components (Phase 1 Complete)
 
@@ -235,6 +235,70 @@ We discovered and fixed several API differences:
 
 ---
 
+## WeatherPlugin Results (Phase 2 Complete)
+
+### Features Demonstrated
+
+The WeatherPlugin successfully demonstrates the full power of the architecture:
+
+1. **Parameter Extraction**
+   - Location (place entity) with default fallback
+   - Timeframe (date entity) with custom extractor
+   - Both default values and extracted values working
+
+2. **Output Contexts**
+   - Sets `weather-followup` context with lifespan 2
+   - Stores last location, timeframe, and weather data
+   - Automatically expires after 2 conversation turns
+
+3. **Follow-Up Handlers**
+   - **Temporal Modifier**: "And tomorrow?" changes timeframe, keeps location
+   - **Location Modifier**: "What about Tokyo?" changes location, keeps timeframe
+   - Confidence-based routing prevents false follow-up matches
+
+### Test Results: 7/7 Tests Passing ✅
+
+| Test | Input | Type | Location | Timeframe | Status |
+|------|-------|------|----------|-----------|--------|
+| 1 | "What's the weather?" | Primary | San Francisco (default) | today (default) | ✅ |
+| 2 | "What's the weather in Paris?" | Primary | paris (extracted) | today (default) | ✅ |
+| 3 | "Weather tomorrow" | Primary | San Francisco (default) | tomorrow (extracted) | ✅ |
+| 4 | "Weather tomorrow in London" | Primary | london (extracted) | tomorrow (extracted) | ✅ |
+| 5 | "How's the weather next week?" | Primary | San Francisco (default) | next week (extracted) | ✅ |
+| 6 | "And tomorrow?" | Follow-up | San Francisco (reused) | tomorrow (modified) | ✅ |
+| 7 | "What about Tokyo?" | Follow-up | tokyo (modified) | tomorrow (reused) | ✅ |
+
+### Follow-Up Confidence Scoring
+
+The engine now intelligently scores follow-ups vs primary intents:
+
+**Short queries without primary signals = High follow-up score**
+- "And tomorrow?" → Follow-up confidence: 0.70 (2 words, no "weather")
+- "What about Tokyo?" → Follow-up confidence: 0.70 (3 words, no "weather")
+
+**Long queries with primary signals = Low follow-up score**
+- "What's the weather in Paris?" → Follow-up: 0.10, Primary: 1.00 → Uses primary ✅
+- "Weather tomorrow in London" → Follow-up: 0.25, Primary: 1.00 → Uses primary ✅
+
+### Architecture Improvements
+
+During WeatherPlugin development, we enhanced the system:
+
+1. **Smarter Follow-Up Detection**
+   - Added confidence scoring to follow-ups (not just binary yes/no)
+   - Compare follow-up vs primary intent confidence
+   - Prefer primary intent when confidence is HIGH (≥0.7)
+   - Consider word count and presence of primary signals
+
+2. **Enhanced NLU Extraction**
+   - Fixed place name extraction to remove punctuation
+   - Improved noun extraction to handle phrases
+   - Better handling of "weather" as both noun and verb
+
+3. **Flexible Required Patterns**
+   - Support matching on nouns, verbs, OR adjectives
+   - Allows natural variations like "Weather tomorrow" (verb) vs "What's the weather?" (noun)
+
 ## Conclusion
 
 **The Dialogflow-style architecture is working perfectly.**
@@ -245,5 +309,12 @@ All core components validated:
 - ✅ Confidence-based routing
 - ✅ Context management
 - ✅ Turn history tracking
+- ✅ **Parameter extraction with defaults**
+- ✅ **Follow-up conversations with context reuse**
+- ✅ **Intelligent follow-up vs primary intent routing**
 
-**Ready for production migration!**
+**Successfully completed:**
+- Phase 1: Foundation (TimePlugin - 6/6 tests passing)
+- Phase 2: Advanced Features (WeatherPlugin - 7/7 tests passing)
+
+**Ready for Phase 3: Production Migration!**
