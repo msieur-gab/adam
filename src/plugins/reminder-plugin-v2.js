@@ -251,7 +251,20 @@ export class ReminderPluginV2 extends BasePlugin {
     const text = signals.originalText;
     const normalized = signals.normalizedText;
 
-    // Priority 1: Check for temporal expressions from NLU
+    // Priority 1: Combined temporal + absolute time "tomorrow at 5pm", "today at 3:30"
+    // This must come BEFORE checking for just temporal or just time
+    const combinedMatch = text.match(/\b(tomorrow|today|tonight)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (combinedMatch) {
+      return {
+        type: 'combined',
+        temporal: combinedMatch[1].toLowerCase(),
+        hour: parseInt(combinedMatch[2]),
+        minute: combinedMatch[3] ? parseInt(combinedMatch[3]) : 0,
+        period: combinedMatch[4] ? combinedMatch[4].toLowerCase() : null
+      };
+    }
+
+    // Priority 2: Check for temporal expressions from NLU (only if no time specified)
     if (signals.dates && signals.dates.length > 0) {
       const dateEntity = signals.dates[0];
       if (['tomorrow', 'today', 'tonight'].includes(dateEntity.type)) {
@@ -262,7 +275,7 @@ export class ReminderPluginV2 extends BasePlugin {
       }
     }
 
-    // Priority 2: Pattern matching for "this morning/afternoon/evening"
+    // Priority 3: Pattern matching for "this morning/afternoon/evening"
     const temporalMatch = text.match(/\b(this )?(morning|afternoon|evening|tonight)\b/i);
     if (temporalMatch) {
       return {
@@ -271,7 +284,7 @@ export class ReminderPluginV2 extends BasePlugin {
       };
     }
 
-    // Priority 3: Relative time "in X minutes/hours"
+    // Priority 4: Relative time "in X minutes/hours"
     let match = text.match(/\bin\s+(\d+)\s*(minute|min|minutes|hour|hours|hr)s?/i);
     if (match) {
       const value = parseInt(match[1]);
@@ -349,7 +362,45 @@ export class ReminderPluginV2 extends BasePlugin {
 
     const now = new Date();
 
-    if (timing.type === 'temporal') {
+    if (timing.type === 'combined') {
+      // Combined temporal + time: "tomorrow at 5pm", "today at 3:30"
+      const scheduled = new Date(now);
+      let hour = timing.hour;
+
+      // Handle 12-hour format
+      if (timing.period) {
+        if (timing.period === 'pm' && hour < 12) {
+          hour += 12;
+        } else if (timing.period === 'am' && hour === 12) {
+          hour = 0;
+        }
+      } else if (hour <= 12 && !timing.period) {
+        // If no period specified and hour is ambiguous (1-12), assume PM for times 1-5, AM for 6-12
+        if (hour >= 1 && hour <= 5) {
+          hour += 12; // 1-5 becomes PM (13-17)
+        }
+      }
+
+      scheduled.setHours(hour, timing.minute, 0, 0);
+
+      // Apply temporal offset
+      if (timing.temporal === 'tomorrow') {
+        scheduled.setDate(scheduled.getDate() + 1);
+      } else if (timing.temporal === 'today') {
+        // Keep today, but if time has passed, move to tomorrow
+        if (scheduled <= now) {
+          scheduled.setDate(scheduled.getDate() + 1);
+        }
+      } else if (timing.temporal === 'tonight') {
+        // Tonight - keep today, but if time has passed, move to tomorrow
+        if (scheduled <= now) {
+          scheduled.setDate(scheduled.getDate() + 1);
+        }
+      }
+
+      return scheduled;
+
+    } else if (timing.type === 'temporal') {
       // Natural temporal expressions: "tomorrow", "tonight", etc.
       const temporal = timing.temporal;
       const scheduled = new Date(now);
@@ -421,7 +472,25 @@ export class ReminderPluginV2 extends BasePlugin {
    * Format human-readable time description
    */
   formatTimeDescription(timing, scheduledFor) {
-    if (timing.type === 'temporal') {
+    if (timing.type === 'combined') {
+      // Combined temporal + time: "tomorrow at 5pm"
+      const timeStr = scheduledFor.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+
+      if (timing.temporal === 'tomorrow') {
+        return `tomorrow at ${timeStr}`;
+      } else if (timing.temporal === 'today') {
+        return `today at ${timeStr}`;
+      } else if (timing.temporal === 'tonight') {
+        return `tonight at ${timeStr}`;
+      }
+
+      return `at ${timeStr}`;
+
+    } else if (timing.type === 'temporal') {
       // Natural temporal expressions
       const temporal = timing.temporal;
       const timeStr = scheduledFor.toLocaleTimeString('en-US', {
