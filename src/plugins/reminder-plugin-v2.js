@@ -110,9 +110,10 @@ export class ReminderPluginV2 extends BasePlugin {
 
             // Format response
             const timeDescription = this.formatTimeDescription(params.timing, scheduledFor);
+            const convertedMessage = this.convertPronounsToSecondPerson(params.message);
 
             return {
-              text: `I'll remind you ${timeDescription}: ${params.message}`,
+              text: `I'll remind you ${timeDescription}: ${convertedMessage}`,
               data: {
                 reminderId,
                 message: params.message,
@@ -542,6 +543,52 @@ export class ReminderPluginV2 extends BasePlugin {
     }
 
     return 'soon';
+  }
+
+  /**
+   * Convert first-person pronouns to second-person for confirmation messages
+   * "take my medicine" → "take your medicine"
+   * "call my daughter" → "call your daughter"
+   * @private
+   */
+  convertPronounsToSecondPerson(message) {
+    if (!message) return message;
+
+    // Define pronoun conversions (case-insensitive matching, case-preserving replacement)
+    const conversions = [
+      // Possessive pronouns
+      { pattern: /\bmy\b/gi, replacement: 'your' },
+      { pattern: /\bmine\b/gi, replacement: 'yours' },
+
+      // Personal pronouns (subject)
+      { pattern: /\bI\b/g, replacement: 'you' },  // "I" stays capitalized as "you" at start of sentence
+
+      // Personal pronouns (object)
+      { pattern: /\bme\b/gi, replacement: 'you' },
+
+      // Reflexive pronouns
+      { pattern: /\bmyself\b/gi, replacement: 'yourself' },
+
+      // Demonstrative (less common but possible)
+      { pattern: /\bI'm\b/gi, replacement: "you're" },
+      { pattern: /\bI've\b/gi, replacement: "you've" },
+      { pattern: /\bI'll\b/gi, replacement: "you'll" }
+    ];
+
+    let converted = message;
+
+    // Apply each conversion
+    for (const { pattern, replacement } of conversions) {
+      converted = converted.replace(pattern, (match) => {
+        // Preserve capitalization
+        if (match[0] === match[0].toUpperCase()) {
+          return replacement.charAt(0).toUpperCase() + replacement.slice(1);
+        }
+        return replacement;
+      });
+    }
+
+    return converted;
   }
 }
 
