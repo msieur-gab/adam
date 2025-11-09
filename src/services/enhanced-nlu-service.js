@@ -52,8 +52,8 @@ export class EnhancedNLUService {
 
       // === SENTENCE STRUCTURE ===
       isQuestion: doc.questions().length > 0,
-      isCommand: doc.imperatives().length > 0,
-      isStatement: !doc.questions().length && !doc.imperatives().length,
+      isCommand: this.detectCommand(doc),
+      isStatement: doc.questions().length === 0 && !this.detectCommand(doc),
 
       // === SENTIMENT & MODALITY ===
       hasNegation: doc.has('#Negative'),
@@ -75,7 +75,7 @@ export class EnhancedNLUService {
 
       // === DOCUMENT METADATA ===
       wordCount: doc.wordCount(),
-      termCount: doc.termCount(),
+      termCount: doc.terms().length,
 
       // === ACTIVE CONTEXT (from conversation) ===
       activeContexts: context ? context.getActive() : [],
@@ -103,14 +103,55 @@ export class EnhancedNLUService {
   }
 
   /**
+   * Detect if sentence is a command
+   * @private
+   */
+  detectCommand(doc) {
+    const text = doc.text().toLowerCase();
+
+    // Command indicators
+    const commandVerbs = ['tell', 'show', 'give', 'set', 'play', 'stop', 'start', 'remind', 'call'];
+
+    // Check if starts with command verb
+    for (const verb of commandVerbs) {
+      if (text.startsWith(verb + ' ')) {
+        return true;
+      }
+    }
+
+    // Check for imperative patterns
+    if (text.match(/^(please\s+)?[a-z]+\s+(me|us|the)/)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Extract nouns with normalization
    * @private
    */
   extractNouns(doc) {
-    return doc
-      .nouns()
-      .out('array')
-      .map(n => n.toLowerCase());
+    const nouns = doc.nouns().out('array').map(n => n.toLowerCase());
+
+    // Also extract individual words from noun phrases
+    const individualNouns = [];
+    for (const noun of nouns) {
+      // Split multi-word nouns and add individual words
+      const words = noun.split(/\s+/);
+      for (const word of words) {
+        // Remove articles and common words
+        if (!['the', 'a', 'an', 'this', 'that', 'these', 'those'].includes(word)) {
+          // Remove punctuation
+          const cleaned = word.replace(/[?.!,;:]/g, '');
+          if (cleaned && !individualNouns.includes(cleaned)) {
+            individualNouns.push(cleaned);
+          }
+        }
+      }
+    }
+
+    return individualNouns;
   }
 
   /**
@@ -142,14 +183,34 @@ export class EnhancedNLUService {
    * @private
    */
   extractDates(doc) {
-    const dates = doc.dates().json();
+    // Compromise doesn't have a built-in dates() method
+    // We'll use simple pattern matching for common date expressions
+    const text = doc.text().toLowerCase();
+    const dates = [];
 
-    return dates.map(date => ({
-      text: date.text,
-      normalized: date.text.toLowerCase(),
-      // Compromise provides structured date info
-      ...date
-    }));
+    const datePatterns = [
+      { pattern: /\btoday\b/g, type: 'today' },
+      { pattern: /\btomorrow\b/g, type: 'tomorrow' },
+      { pattern: /\byesterday\b/g, type: 'yesterday' },
+      { pattern: /\bnext week\b/g, type: 'next_week' },
+      { pattern: /\bnext month\b/g, type: 'next_month' },
+      { pattern: /\bthis (morning|afternoon|evening|night)\b/g, type: 'time_of_day' }
+    ];
+
+    for (const { pattern, type } of datePatterns) {
+      const matches = text.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          dates.push({
+            text: match,
+            normalized: match,
+            type
+          });
+        }
+      }
+    }
+
+    return dates;
   }
 
   /**
@@ -157,14 +218,30 @@ export class EnhancedNLUService {
    * @private
    */
   extractTimes(doc) {
-    // Compromise can extract times like "3pm", "15:00"
-    const times = doc.times().json();
+    // Extract time expressions using pattern matching
+    const text = doc.text().toLowerCase();
+    const times = [];
 
-    return times.map(time => ({
-      text: time.text,
-      normalized: time.text.toLowerCase(),
-      ...time
-    }));
+    const timePatterns = [
+      { pattern: /\b(\d{1,2})\s*(am|pm)\b/g, type: '12hour' },
+      { pattern: /\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/g, type: '24hour' },
+      { pattern: /\bnow\b/g, type: 'now' }
+    ];
+
+    for (const { pattern, type } of timePatterns) {
+      const matches = text.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          times.push({
+            text: match,
+            normalized: match,
+            type
+          });
+        }
+      }
+    }
+
+    return times;
   }
 
   /**
@@ -220,13 +297,21 @@ export class EnhancedNLUService {
    * @private
    */
   extractNumbers(doc) {
-    const numbers = doc.numbers().json();
+    // Extract numbers using pattern matching
+    const text = doc.text();
+    const numbers = [];
 
-    return numbers.map(num => ({
-      text: num.text,
-      value: num.number || null,
-      ...num
-    }));
+    const numberPattern = /\b(\d+(?:\.\d+)?)\b/g;
+    let match;
+
+    while ((match = numberPattern.exec(text)) !== null) {
+      numbers.push({
+        text: match[0],
+        value: parseFloat(match[1])
+      });
+    }
+
+    return numbers;
   }
 
   /**
@@ -234,13 +319,21 @@ export class EnhancedNLUService {
    * @private
    */
   extractMoney(doc) {
-    const money = doc.money().json();
+    // Extract money using pattern matching
+    const text = doc.text();
+    const money = [];
 
-    return money.map(m => ({
-      text: m.text,
-      value: m.number || null,
-      ...m
-    }));
+    const moneyPattern = /\$(\d+(?:\.\d{2})?)\b/g;
+    let match;
+
+    while ((match = moneyPattern.exec(text)) !== null) {
+      money.push({
+        text: match[0],
+        value: parseFloat(match[1])
+      });
+    }
+
+    return money;
   }
 
   /**
