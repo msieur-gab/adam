@@ -1,4 +1,5 @@
 import { PiperWebEngine, OnnxWebGPURuntime, PiperWebWorkerEngine, OnnxWebGPUWorkerRuntime, HuggingFaceVoiceProvider } from 'piper-tts-web';
+import { playbackController, PlaybackPriority } from './playback-controller.js';
 
 /**
  * TTS Service for ADAM
@@ -23,6 +24,9 @@ class TTSService {
     this.currentAudio = null; // Track current HTML Audio element for Piper
     this.isSpeaking = false; // Track if currently speaking
     this.shouldStop = false; // Flag to interrupt ongoing generation
+
+    // Register with global playback controller
+    playbackController.register('tts', this, PlaybackPriority.HIGH);
   }
 
   /**
@@ -346,6 +350,9 @@ class TTSService {
       this.shouldStop = false;
       this.isSpeaking = true;
 
+      // Notify playback controller
+      playbackController.setPlaying('tts');
+
       const startTime = performance.now();
       console.log('🎤 Generating speech with Piper:', text.substring(0, 50) + '...');
 
@@ -387,11 +394,17 @@ class TTSService {
 
       this.isSpeaking = false;
 
+      // Notify playback controller
+      playbackController.setStopped('tts');
+
       const totalTime = performance.now() - startTime;
       console.log(`✅ Total Piper TTS time: ${totalTime.toFixed(0)}ms (gen: ${genTime.toFixed(0)}ms, play: ${playTime.toFixed(0)}ms)`);
 
     } catch (error) {
       this.isSpeaking = false;
+
+      // Notify playback controller
+      playbackController.setStopped('tts');
 
       // If interrupted, don't fall back - just throw the error
       if (error.message === 'interrupted') {
@@ -504,6 +517,16 @@ class TTSService {
         console.log('Audio element already stopped');
       }
     }
+
+    // Notify playback controller
+    playbackController.setStopped('tts');
+  }
+
+  /**
+   * Check if TTS is currently playing
+   */
+  isPlaying() {
+    return this.isSpeaking;
   }
 
   /**

@@ -6,6 +6,7 @@
 
 import { BasePlugin } from './plugin-base.js';
 import { ttsService } from '../services/tts-service.js';
+import { playbackController, PlaybackPriority } from '../services/playback-controller.js';
 
 export class AmbientSoundPlugin extends BasePlugin {
   constructor() {
@@ -67,6 +68,9 @@ export class AmbientSoundPlugin extends BasePlugin {
     this.audioPlayer = new Audio();
     this.audioPlayer.loop = true; // Loop ambient sounds
     this.audioPlayer.volume = this.originalVolume;
+
+    // Register with playback controller
+    playbackController.register('ambient-sound', this, PlaybackPriority.LOW);
 
     // Listen for TTS events to auto-duck
     this.setupTTSIntegration();
@@ -247,6 +251,9 @@ export class AmbientSoundPlugin extends BasePlugin {
       await this.audioPlayer.play();
       this.isPlaying = true;
 
+      // Notify playback controller
+      playbackController.setPlaying('ambient-sound');
+
       console.log(`[AmbientSound] Playing: ${sound.name}`);
 
     } catch (error) {
@@ -269,6 +276,9 @@ export class AmbientSoundPlugin extends BasePlugin {
 
     // Cancel any active timer (service worker or local)
     await this.cancelTimer();
+
+    // Notify playback controller
+    playbackController.setStopped('ambient-sound');
 
     console.log('[AmbientSound] Stopped');
   }

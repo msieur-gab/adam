@@ -4,7 +4,9 @@ import { logConversation, getRecentConversations, getProfile } from '../services
 import { enhancedConversationService as conversationService } from '../services/enhanced-conversation-service.js';
 // Fallback: import { conversationService } from '../services/conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
+import { ttsQueueService } from '../services/tts-queue-service.js';
 import { ambientSoundPlugin } from '../plugins/ambient-sound-plugin.js';
+import { playbackController } from '../services/playback-controller.js';
 
 /**
  * Companion Chat Component
@@ -310,8 +312,8 @@ class CompanionChat extends LitElement {
     window.removeEventListener('voice-input', this.boundVoiceInputHandler);
     window.removeEventListener('voice-interrupt', this.boundVoiceInterruptHandler);
 
-    // Stop any ongoing TTS
-    ttsService.stop();
+    // Use global playback controller to stop everything
+    playbackController.stopAll();
 
     // Cancel any pending TTS
     if (this.pendingTTS) {
@@ -324,7 +326,7 @@ class CompanionChat extends LitElement {
   }
 
   handleVoiceInterrupt(event) {
-    console.log('[CompanionChat] Voice interrupt received - cancelling pending TTS');
+    console.log('[CompanionChat] Voice interrupt received - using global playback controller');
 
     // Cancel any pending TTS that hasn't started yet
     if (this.pendingTTS) {
@@ -332,7 +334,10 @@ class CompanionChat extends LitElement {
       this.pendingTTS = null;
     }
 
-    // TTS is already stopped by voice-input component
+    // Use global playback controller to stop all TTS (but not ambient sound)
+    // TTS has HIGH priority, ambient sound has LOW priority
+    // Only stop HIGH priority sources (TTS)
+    playbackController.stopByPriority(playbackController.PRIORITY.HIGH);
   }
 
   async handleVoiceInput(event) {
@@ -428,18 +433,23 @@ class CompanionChat extends LitElement {
 
       // Check for stop intent
       if (result.nlu && result.nlu.intent === 'stop_speaking') {
-        console.log('[CompanionChat] Stop intent detected - stopping TTS and ambient sound');
-        ttsService.stop();
+        console.log('[CompanionChat] Stop intent detected - using global playback controller');
 
-        // Also stop ambient sound if playing
-        if (ambientSoundPlugin.isCurrentlyPlaying()) {
-          await ambientSoundPlugin.stopSound();
-          this.addCompanionMessage("Okay, I've stopped everything.", requestId);
-        } else {
-          this.addCompanionMessage("Okay, I've stopped.", requestId);
+        // Use global playback controller to stop everything
+        const stopResult = playbackController.stopAll();
+
+        // Generate appropriate response
+        let responseText = "Okay, I've stopped";
+        if (stopResult.stopped > 0) {
+          if (stopResult.sources.includes('ambient-sound')) {
+            responseText += " everything";
+          }
         }
+        responseText += ".";
 
-        await logConversation(input, "Stopped speaking", 'stop-intent');
+        this.addCompanionMessage(responseText, requestId);
+
+        await logConversation(input, responseText, 'stop-intent');
         return;
       }
 
@@ -503,37 +513,69 @@ class CompanionChat extends LitElement {
     const sentences = this.splitIntoSentences(text);
     console.log(`[CompanionChat] Speaking ${sentences.length} sentences`);
 
-    try {
-      // Speak each sentence one by one
-      for (let i = 0; i < sentences.length; i++) {
-        // Check if request is still current before each sentence
-        if (requestId && requestId !== this.currentRequestId) {
-          console.log(`[CompanionChat] Stopping TTS - request #${requestId} superseded by #${this.currentRequestId}`);
-          break;
-        }
+    // Use TTSQueue for long articles (>3 sentences) to eliminate gaps
+    // Use sequential method for short texts (lower latency for simple responses)
+    const useTTSQueue = sentences.length > 3;
 
-        const sentence = sentences[i];
-        console.log(`[CompanionChat] Speaking sentence ${i + 1}/${sentences.length}: "${sentence.substring(0, 50)}..."`);
+    if (useTTSQueue) {
+      console.log('[CompanionChat] Using TTS Queue for seamless playback');
 
-        await ttsService.speak(sentence, {
-          rate: 0.9,
-          pitch: 1.0,
-          volume: 1.0
+      try {
+        await ttsQueueService.queueAndPlay(sentences, {
+          onProgress: (progress) => {
+            console.log(`[TTSQueue] Progress: ${progress.currentIndex + 1}/${progress.total} (${progress.synthesized} buffered)`);
+          },
+          onComplete: () => {
+            console.log('[CompanionChat] TTS Queue playback complete');
+          },
+          onError: (error) => {
+            console.error('[CompanionChat] TTS Queue error:', error);
+          }
         });
-
-        // Very brief pause between sentences for natural flow
-        if (i < sentences.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 50));
+      } catch (error) {
+        // Ignore interrupted errors - they're expected
+        if (error !== 'interrupted') {
+          console.error('TTS Queue error:', error);
+        } else {
+          console.log('[CompanionChat] TTS Queue interrupted by user');
         }
       }
+    } else {
+      // Sequential method for short texts (original implementation)
+      console.log('[CompanionChat] Using sequential TTS for short response');
 
-      console.log('[CompanionChat] Finished speaking all sentences');
-    } catch (error) {
-      // Ignore interrupted errors - they're expected
-      if (error !== 'interrupted') {
-        console.error('Speech error:', error);
-      } else {
-        console.log('[CompanionChat] Speech interrupted by user');
+      try {
+        // Speak each sentence one by one
+        for (let i = 0; i < sentences.length; i++) {
+          // Check if request is still current before each sentence
+          if (requestId && requestId !== this.currentRequestId) {
+            console.log(`[CompanionChat] Stopping TTS - request #${requestId} superseded by #${this.currentRequestId}`);
+            break;
+          }
+
+          const sentence = sentences[i];
+          console.log(`[CompanionChat] Speaking sentence ${i + 1}/${sentences.length}: "${sentence.substring(0, 50)}..."`);
+
+          await ttsService.speak(sentence, {
+            rate: 0.9,
+            pitch: 1.0,
+            volume: 1.0
+          });
+
+          // Very brief pause between sentences for natural flow
+          if (i < sentences.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        }
+
+        console.log('[CompanionChat] Finished speaking all sentences');
+      } catch (error) {
+        // Ignore interrupted errors - they're expected
+        if (error !== 'interrupted') {
+          console.error('Speech error:', error);
+        } else {
+          console.log('[CompanionChat] Speech interrupted by user');
+        }
       }
     }
   }
