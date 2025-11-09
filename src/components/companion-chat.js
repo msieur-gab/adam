@@ -7,7 +7,6 @@ import { intentFlowConversationService as conversationService } from '../service
 // import { conversationService } from '../services/conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
 import { ttsQueueService } from '../services/tts-queue-service.js';
-import { ambientSoundPlugin } from '../plugins/ambient-sound-plugin.js';
 import { playbackController } from '../services/playback-controller.js';
 
 /**

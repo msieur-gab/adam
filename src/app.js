@@ -4,7 +4,6 @@ import './components/companion-chat.js';
 import './components/medication-reminder.js';
 import './services/db-service.js';
 import { db } from './services/db-service.js';
-import { initializePlugins } from './plugins/bootstrap.js';
 
 class AdamApp extends LitElement {
   static properties = {
@@ -85,9 +84,6 @@ class AdamApp extends LitElement {
   async initialize() {
     try {
       this.loading = true;
-
-      // Initialize plugin system first
-      await initializePlugins();
 
       // Register service worker for background tasks (timers, reminders)
       await this.registerServiceWorker();
