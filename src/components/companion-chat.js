@@ -1,8 +1,10 @@
 import { LitElement, html, css } from 'lit';
 import { logConversation, getRecentConversations, getProfile } from '../services/db-service.js';
-// Use enhanced conversation service with compromise NLU
-import { enhancedConversationService as conversationService } from '../services/enhanced-conversation-service.js';
-// Fallback: import { conversationService } from '../services/conversation-service.js';
+// Use NEW Intent Flow architecture with Dialogflow-style conversational AI
+import { intentFlowConversationService as conversationService } from '../services/intent-flow-conversation-service.js';
+// Legacy options:
+// import { enhancedConversationService as conversationService } from '../services/enhanced-conversation-service.js';
+// import { conversationService } from '../services/conversation-service.js';
 import { ttsService } from '../services/tts-service.js';
 import { ttsQueueService } from '../services/tts-queue-service.js';
 import { ambientSoundPlugin } from '../plugins/ambient-sound-plugin.js';
