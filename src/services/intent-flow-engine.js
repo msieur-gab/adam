@@ -645,6 +645,26 @@ export class IntentFlowEngine {
     const paramDef = flow.parameters[awaitingParam];
     const paramValue = this.extractParameters({ [awaitingParam]: paramDef }, signals)[awaitingParam];
 
+    // Validate the parameter if validator is defined
+    if (paramDef.validator) {
+      const validation = paramDef.validator(paramValue);
+      if (!validation.valid) {
+        // Validation failed - re-prompt with error message
+        console.log(`[IntentFlowEngine] Validation failed for ${awaitingParam}: ${validation.error}`);
+
+        return {
+          text: validation.error,
+          awaitingInput: awaitingParam,
+          requiresUserInput: true,
+          isFollowUp: true,
+          metadata: {
+            validationError: true,
+            parameter: awaitingParam
+          }
+        };
+      }
+    }
+
     // Add to collected params
     collectedParams[awaitingParam] = paramValue;
 

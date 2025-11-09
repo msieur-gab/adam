@@ -60,7 +60,8 @@ export class ReminderPluginV2 extends BasePlugin {
 
           // Anti-patterns (prevent confusion with other intents)
           antiPatterns: [
-            { nouns: ['weather', 'time', 'clock'], penalty: -0.5 }
+            { nouns: ['weather', 'time', 'clock'], penalty: -0.5 },
+            { verbs: ['cancel', 'delete', 'remove', 'stop', 'clear'], penalty: -0.9 }
           ]
         },
 
@@ -70,7 +71,25 @@ export class ReminderPluginV2 extends BasePlugin {
             entity: 'any',
             required: true,
             prompt: 'What would you like to be reminded about?',
-            extractor: (signals) => this.extractMessage(signals)
+            extractor: (signals) => this.extractMessage(signals),
+            validator: (message) => {
+              if (!message || message.length < 3) {
+                return { valid: false, error: 'Please provide what you want to be reminded about' };
+              }
+
+              // Check for incomplete possessives (dangling "my", "your", "the", etc.)
+              if (/\b(my|your|the|a|an)\s*$/i.test(message.trim())) {
+                return { valid: false, error: 'That seems incomplete. What should I remind you about?' };
+              }
+
+              // Minimum word count (at least 2 words for meaningful reminder)
+              const wordCount = message.trim().split(/\s+/).length;
+              if (wordCount < 2) {
+                return { valid: false, error: 'Please provide more details about the reminder' };
+              }
+
+              return { valid: true };
+            }
           },
 
           timing: {
@@ -140,6 +159,78 @@ export class ReminderPluginV2 extends BasePlugin {
               lastReminderId: result.data?.reminderId,
               lastMessage: params.message,
               lastTiming: params.timing
+            })
+          }
+        ]
+      },
+
+      reminder_cancel: {
+        // Scoring rules
+        scoringRules: {
+          // Required: cancel/delete/remove + reminder
+          required: [
+            { verbs: ['cancel', 'delete', 'remove', 'stop', 'clear'] },
+            { nouns: ['reminder', 'alarm', 'alert', 'notification', 'it'] }
+          ],
+
+          // Boosters
+          boosters: [
+            { hasContext: 'reminder-created', boost: 0.3 },
+            { isCommand: true, boost: 0.2 }
+          ],
+
+          // Anti-patterns
+          antiPatterns: [
+            { nouns: ['weather', 'news', 'time'], penalty: -0.5 }
+          ]
+        },
+
+        // No parameters needed (uses context)
+        parameters: {},
+
+        // Fulfillment
+        fulfill: async (params, context) => {
+          try {
+            // Get the last reminder from context
+            const reminderCtx = context.get('reminder-created');
+
+            if (reminderCtx && reminderCtx.lastReminderId) {
+              // Cancel the last reminder
+              await reminderService.cancelReminder(reminderCtx.lastReminderId);
+
+              return {
+                text: 'Reminder cancelled.',
+                data: {
+                  cancelledId: reminderCtx.lastReminderId,
+                  wasMessage: reminderCtx.lastMessage
+                }
+              };
+            }
+
+            // No recent reminder to cancel
+            return {
+              text: 'I don\'t have a recent reminder to cancel. Would you like to list your active reminders?',
+              data: {
+                noRecentReminder: true
+              }
+            };
+
+          } catch (error) {
+            console.error('[ReminderPluginV2] Error cancelling reminder:', error);
+            return {
+              text: 'Sorry, I had trouble cancelling that reminder.',
+              error: error.message
+            };
+          }
+        },
+
+        // Output contexts
+        outputContexts: [
+          {
+            name: 'reminder-cancelled',
+            lifespan: 1,
+            parameters: (result) => ({
+              cancelledId: result.data?.cancelledId
             })
           }
         ]
