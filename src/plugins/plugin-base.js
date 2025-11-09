@@ -28,16 +28,54 @@ export class BasePlugin {
   }
 
   /**
-   * Register plugin's NLU patterns
+   * [NEW ARCHITECTURE] Register plugin's intent flows
+   * Returns declarative intent flow definitions (Dialogflow-style)
+   *
+   * Example:
+   * ```
+   * getIntentFlows() {
+   *   return {
+   *     my_intent: {
+   *       scoringRules: {
+   *         required: [{ nouns: ['weather', 'forecast'] }],
+   *         boosters: [{ hasDate: true, boost: 0.3 }]
+   *       },
+   *       parameters: {
+   *         location: { entity: 'place', required: false, default: 'SF' }
+   *       },
+   *       fulfill: async (params) => ({ text: "Response" }),
+   *       outputContexts: [{ name: 'my-context', lifespan: 2 }],
+   *       followUps: { ... }
+   *     }
+   *   };
+   * }
+   * ```
+   *
+   * @returns {Object} Map of intent flows
+   */
+  getIntentFlows() {
+    // Return null by default (backward compatibility)
+    // Plugins using new architecture override this method
+    return null;
+  }
+
+  /**
+   * [LEGACY] Register plugin's NLU patterns
    * Returns object with subject patterns for compromise NLU
+   *
+   * @deprecated Use getIntentFlows() instead for new plugins
+   * @returns {Object} NLU pattern definitions
    */
   getNLUPatterns() {
     return {};
   }
 
   /**
-   * Register plugin's intents
+   * [LEGACY] Register plugin's intents
    * Returns array of intent definitions
+   *
+   * @deprecated Use getIntentFlows() instead for new plugins
+   * @returns {Array} Array of intent names
    */
   getIntents() {
     return this.intents;
@@ -46,6 +84,8 @@ export class BasePlugin {
   /**
    * Register plugin's services
    * Returns map of service instances
+   *
+   * @returns {Object} Map of services
    */
   getServices() {
     return this.services;
@@ -54,19 +94,23 @@ export class BasePlugin {
   /**
    * Get plugin's UI components (if any)
    * Returns map of component definitions
+   *
+   * @returns {Object} Map of components
    */
   getComponents() {
     return this.components;
   }
 
   /**
-   * Handle plugin-specific query
+   * [LEGACY] Handle plugin-specific query
    * @param {string} intent - The intent to handle
    * @param {Object} params - Query parameters
    * @returns {Promise<Object>} Plugin response
+   *
+   * @deprecated Use getIntentFlows() with fulfill() function for new plugins
    */
   async handleQuery(intent, params) {
-    throw new Error('Plugin must implement handleQuery()');
+    throw new Error('Plugin must implement handleQuery() or getIntentFlows()');
   }
 
   /**
